@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Role } from '../types.ts';
-import { api, getAuthToken, setAuthToken, removeAuthToken } from '../services/api.ts';
+import { api, getAuthToken, setAuthToken, removeAuthToken, setSessionRestoring } from '../services/api.ts';
 
 interface AuthContextType {
   user: User | null;
@@ -29,51 +29,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const token = getAuthToken();
     if (!token) {
+      setSessionRestoring(false);
       setIsLoading(false);
       return;
     }
 
+    let cancelled = false;
+    setSessionRestoring(true);
     api.getMe()
       .then((res) => {
-        setUser(res.user);
+        if (!cancelled) {
+          setUser(res.user);
+        }
       })
       .catch(() => {
-        removeAuthToken();
-        setUser(null);
+        if (!cancelled) {
+          removeAuthToken();
+          setUser(null);
+        }
       })
       .finally(() => {
-        setIsLoading(false);
+        if (!cancelled) {
+          setSessionRestoring(false);
+          setIsLoading(false);
+        }
       });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      removeAuthToken();
+      setUser(null);
+      setIsLocked(false);
+    };
+    window.addEventListener('pos:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('pos:unauthorized', handleUnauthorized);
   }, []);
 
   const login = async (identifier: string, pass: string) => {
-    setIsLoading(true);
-    try {
-      const res = await api.login(identifier, pass);
-      setAuthToken(res.token);
-      setUser(res.user);
-      setIsLocked(false);
-    } finally {
-      setIsLoading(false);
-    }
+    const res = await api.login(identifier, pass);
+    setAuthToken(res.token);
+    setUser(res.user);
+    setIsLocked(false);
   };
 
   const pinLogin = async (pin: string) => {
-    setIsLoading(true);
-    try {
-      const res = await api.pinLogin(pin);
-      setAuthToken(res.token);
-      setUser(res.user);
-      setIsLocked(false);
-    } finally {
-      setIsLoading(false);
-    }
+    const res = await api.pinLogin(pin);
+    setAuthToken(res.token);
+    setUser(res.user);
+    setIsLocked(false);
   };
 
   const unlockWithPin = async (pin: string): Promise<boolean> => {
     try {
       const res = await api.pinLogin(pin);
       if (res.user) {
+        if (res.token) {
+          setAuthToken(res.token);
+        }
         setUser(res.user);
         setIsLocked(false);
         return true;
@@ -85,6 +102,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    const token = getAuthToken();
+    if (token) {
+      api.logout(token).catch(() => {});
+    }
     removeAuthToken();
     setUser(null);
     setIsLocked(false);

@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
-import { api } from '../services/api.ts';
+import { useLanguage } from '../context/LanguageContext.tsx';
+import { Order, PaymentMethod } from '../types.ts';
+import { api, generateUuid } from '../services/api.ts';
 import {
   X,
   Check,
@@ -9,55 +11,155 @@ import {
   Banknote,
   Smartphone,
   Building,
-  RotateCcw,
+  Landmark,
+  Wallet,
   Printer,
-  Sparkles,
-  ArrowRight,
+  AlertTriangle,
+  Plus,
+  Trash2,
 } from 'lucide-react';
 
 interface PaymentModalProps {
   isOpen: boolean;
+  existingOrder?: Order | null;
   onClose: () => void;
   onSuccess: (receiptData: any) => void;
+  onOpenCashRegisterModal?: () => void;
 }
 
-export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onSuccess }) => {
+export const PaymentModal: React.FC<PaymentModalProps> = ({
+  isOpen,
+  existingOrder = null,
+  onClose,
+  onSuccess,
+  onOpenCashRegisterModal,
+}) => {
   const { user } = useAuth();
+  const { t } = useLanguage();
   const {
     cart,
+    activeOrderId,
+    setActiveOrderId,
     orderType,
     selectedTable,
     selectedCustomer,
-    selectedWaiter,
     discount,
     deliveryFee,
     deliveryAddress,
+    taxRate,
+    taxAmount,
     notes,
     subtotal,
     total,
+    isShiftOpen,
     clearCart,
     openCashDrawer,
+    refreshShift,
+    refreshDashboard,
+    refreshOfflineCount,
   } = usePos();
 
-  const [paymentEntries, setPaymentEntries] = useState<
-    { method: 'CASH' | 'CARD' | 'CCP' | 'BARIDIMOB' | 'OTHER'; amount: number }[]
-  >([{ method: 'CASH', amount: total }]);
+  const orderTotal = existingOrder ? Number(existingOrder.total) : total;
+  const alreadyPaid = existingOrder ? Number(existingOrder.paidAmount || 0) : 0;
+  const amountDue = Math.max(0, orderTotal - alreadyPaid);
 
-  const [activeMethod, setActiveMethod] = useState<'CASH' | 'CARD' | 'CCP' | 'BARIDIMOB' | 'OTHER'>('CASH');
-  const [tenderInput, setTenderInput] = useState<string>(String(total));
+  interface SplitLeg {
+    id: string;
+    method: PaymentMethod;
+    amount: number;
+    tenderAmount: number;
+    changeAmount: number;
+    transactionRef?: string;
+  }
+
+  const [activeMethod, setActiveMethod] = useState<PaymentMethod>('CASH');
+  const [payAmountInput, setPayAmountInput] = useState<string>(String(amountDue));
+  const [tenderInput, setTenderInput] = useState<string>(String(amountDue));
+  const [isPartialMode, setIsPartialMode] = useState<boolean>(false);
+  const [isSplitMode, setIsSplitMode] = useState<boolean>(false);
+  const [splitLegs, setSplitLegs] = useState<SplitLeg[]>([]);
+  const [splitAmountInput, setSplitAmountInput] = useState<string>(String(amountDue));
+  const [splitRefInput, setSplitRefInput] = useState<string>('');
   const [printReceiptOnSuccess, setPrintReceiptOnSuccess] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const pendingPaymentUuidRef = React.useRef<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setErrorMessage('');
+      setActiveMethod('CASH');
+      setIsPartialMode(false);
+      setIsSplitMode(false);
+      setSplitLegs([]);
+      setSplitAmountInput(String(amountDue));
+      setSplitRefInput('');
+      setPayAmountInput(String(amountDue));
+      setTenderInput(String(amountDue));
+      pendingPaymentUuidRef.current = generateUuid();
+    } else {
+      pendingPaymentUuidRef.current = null;
+    }
+  }, [isOpen, amountDue]);
 
   if (!isOpen) return null;
 
-  const totalAssigned = paymentEntries.reduce((sum, p) => sum + p.amount, 0);
-  const remainingDue = Math.max(0, total - totalAssigned);
+  const splitSum = splitLegs.reduce((s, l) => s + l.amount, 0);
+  const remainingForSplit = Math.max(0, amountDue - splitSum);
 
-  const tenderNum = parseFloat(tenderInput) || 0;
-  const changeDue = Math.max(0, tenderNum - total);
+  const payAmount = isSplitMode
+    ? splitSum
+    : isPartialMode
+    ? Math.min(amountDue, Math.max(0, parseFloat(payAmountInput) || 0))
+    : amountDue;
+  const tenderNum = isSplitMode
+    ? splitLegs.reduce((s, l) => s + l.tenderAmount, 0)
+    : activeMethod === 'CASH'
+    ? Math.max(0, parseFloat(tenderInput) || 0)
+    : payAmount;
+  const changeDue = isSplitMode
+    ? splitLegs.reduce((s, l) => s + l.changeAmount, 0)
+    : activeMethod === 'CASH'
+    ? Math.max(0, tenderNum - payAmount)
+    : 0;
 
-  // Quick cash amount addition
+  const handleAddSplitLeg = () => {
+    const legAmt = Math.min(remainingForSplit, Math.max(0, parseFloat(splitAmountInput) || 0));
+    if (legAmt <= 0) {
+      setErrorMessage(t('يرجى إدخال مبلغ صحيح للدفعة', 'Veuillez saisir un montant valide'));
+      return;
+    }
+    const legTender =
+      activeMethod === 'CASH' ? Math.max(legAmt, parseFloat(tenderInput) || legAmt) : legAmt;
+    const legChange = activeMethod === 'CASH' ? Math.max(0, legTender - legAmt) : 0;
+
+    const nextLegs: SplitLeg[] = [
+      ...splitLegs,
+      {
+        id: `leg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        method: activeMethod,
+        amount: legAmt,
+        tenderAmount: legTender,
+        changeAmount: legChange,
+        transactionRef: splitRefInput.trim() || undefined,
+      },
+    ];
+    setSplitLegs(nextLegs);
+    const nextRemaining = Math.max(0, amountDue - nextLegs.reduce((s, l) => s + l.amount, 0));
+    setSplitAmountInput(String(nextRemaining));
+    setTenderInput(String(nextRemaining));
+    setSplitRefInput('');
+    setErrorMessage('');
+  };
+
+  const handleRemoveSplitLeg = (legId: string) => {
+    const nextLegs = splitLegs.filter((l) => l.id !== legId);
+    setSplitLegs(nextLegs);
+    const nextRemaining = Math.max(0, amountDue - nextLegs.reduce((s, l) => s + l.amount, 0));
+    setSplitAmountInput(String(nextRemaining));
+    setTenderInput(String(nextRemaining));
+  };
+
   const handleAddTender = (amount: number) => {
     const current = parseFloat(tenderInput) || 0;
     setTenderInput(String(current + amount));
@@ -67,248 +169,515 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
     if (val === 'C') {
       setTenderInput('');
     } else if (val === 'EXACT') {
-      setTenderInput(String(total));
+      setTenderInput(String(payAmount));
     } else {
       setTenderInput((prev) => (prev === '0' ? val : prev + val));
     }
   };
 
   const handleCompletePayment = async () => {
-    if (cart.length === 0) return;
+    if (!existingOrder && cart.length === 0) return;
+    if (payAmount <= 0) {
+      setErrorMessage(t('يرجى إدخال مبلغ دفع صحيح أكبر من 0', 'Veuillez saisir un montant valide'));
+      return;
+    }
+
     setIsProcessing(true);
     setErrorMessage('');
+    let createdOrder: any = null;
 
     try {
-      // 1. Create Order in database
-      const idempotencyKey = `pay-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-      const orderRes = await api.createOrder({
-        type: orderType,
-        tableId: selectedTable?.id,
-        customerId: selectedCustomer?.id,
-        items: cart,
-        discount,
-        deliveryFee,
-        deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
-        notes,
-        isHeld: false,
-        idempotencyKey,
-      });
+      if (!isShiftOpen && (typeof navigator === 'undefined' || navigator.onLine)) {
+        const liveShift = await api.getCurrentShift().catch(() => null);
+        if (!liveShift || (!liveShift.isOpen && liveShift.shift?.status !== 'OPEN' && liveShift.status !== 'OPEN')) {
+          await refreshShift();
+          setErrorMessage(
+            t(
+              'يرجى فتح وردية الصندوق أولاً قبل استقبال المدفوعات',
+              'Veuillez ouvrir une session de caisse avant d’encaisser'
+            )
+          );
+          return;
+        }
+      }
 
-      // 2. Process Payment
-      const paymentsPayload = paymentEntries.map((p) => ({
-        method: p.method,
-        amount: p.amount,
-        tenderAmount: p.method === 'CASH' ? tenderNum : p.amount,
-        changeAmount: p.method === 'CASH' ? changeDue : 0,
-      }));
+      if (!pendingPaymentUuidRef.current) {
+        pendingPaymentUuidRef.current = generateUuid();
+      }
+      const opUuid = pendingPaymentUuidRef.current;
+      const idempotencyKey = `pay-${opUuid}`;
+      const safeCustomerId =
+        selectedCustomer?.id && selectedCustomer.id > 0 ? selectedCustomer.id : undefined;
+      let targetOrder: any = existingOrder;
+
+      if (!targetOrder) {
+        if (activeOrderId) {
+          targetOrder = await api.appendOrderItems(activeOrderId, {
+            items: cart,
+            replaceAll: true,
+            discount,
+            deliveryFee,
+            notes,
+            sendToKitchen: false,
+          });
+        } else {
+          targetOrder = await api.createOrder({
+            offlineId: `off-${opUuid}`,
+            operationId: opUuid,
+            type: orderType,
+            tableId: selectedTable?.id,
+            tableNumber: selectedTable?.tableNumber,
+            customerId: safeCustomerId,
+            items: cart,
+            discount,
+            deliveryFee,
+            taxRate,
+            taxAmount,
+            subtotal,
+            total,
+            deliveryAddress: orderType === 'DELIVERY' ? deliveryAddress : undefined,
+            notes,
+            isHeld: false,
+            idempotencyKey: `ord-${idempotencyKey}`,
+          });
+        }
+        createdOrder = targetOrder;
+      }
+
+      const paymentsPayload = isSplitMode
+        ? splitLegs.map((leg, idx) => ({
+            method: leg.method,
+            amount: leg.amount,
+            tenderAmount: leg.tenderAmount,
+            changeAmount: leg.changeAmount,
+            transactionRef: leg.transactionRef,
+            idempotencyKey: `txn-${idempotencyKey}-${idx}-${leg.method}`,
+          }))
+        : [
+            {
+              method: activeMethod,
+              amount: payAmount,
+              tenderAmount: activeMethod === 'CASH' ? Math.max(payAmount, tenderNum) : payAmount,
+              changeAmount: changeDue,
+              idempotencyKey: `txn-${idempotencyKey}`,
+            },
+          ];
 
       await api.processPayment({
-        orderId: orderRes.id,
+        orderId: targetOrder.id,
+        offlineId: targetOrder.offline ? targetOrder.offlineId : undefined,
+        orderNumber: targetOrder.orderNumber,
         payments: paymentsPayload,
         idempotencyKey: `txn-${idempotencyKey}`,
+        operationId: opUuid,
       });
 
-      // 3. Trigger cash drawer
+      pendingPaymentUuidRef.current = null;
       openCashDrawer();
 
-      // 4. Prepare receipt payload
+      const receiptItems = existingOrder ? existingOrder.items || [] : [...cart];
+      const primaryMethodLabel = isSplitMode
+        ? splitLegs.length > 1
+          ? 'MIXED'
+          : splitLegs[0]?.method || activeMethod
+        : activeMethod;
       const receiptData = {
-        orderNumber: orderRes.orderNumber,
-        dailySequence: orderRes.dailySequence,
-        tableNumber: selectedTable?.tableNumber,
-        customerName: selectedCustomer?.name,
-        customerPhone: selectedCustomer?.phone,
-        orderType,
-        items: cart,
-        subtotal,
-        discount,
-        deliveryFee,
-        total,
+        orderId: targetOrder.id && targetOrder.id > 0 ? targetOrder.id : null,
+        orderNumber: targetOrder.orderNumber,
+        dailySequence: targetOrder.dailySequence,
+        tableNumber: existingOrder?.table?.tableNumber || existingOrder?.tableNumber || selectedTable?.tableNumber,
+        customerName: existingOrder?.customer?.name || existingOrder?.customerName || selectedCustomer?.name,
+        orderType: existingOrder?.type || orderType,
+        items: receiptItems,
+        subtotal: existingOrder ? Number(existingOrder.subtotal) : subtotal,
+        discount: existingOrder ? Number(existingOrder.discount || 0) : discount,
+        deliveryFee: existingOrder ? Number(existingOrder.deliveryFee || 0) : deliveryFee,
+        taxRate: existingOrder ? Number(existingOrder.taxRate || 0) : taxRate,
+        taxAmount: existingOrder ? Number(existingOrder.taxAmount || 0) : taxAmount,
+        total: orderTotal,
+        paidAmount: alreadyPaid + payAmount,
         payments: paymentsPayload,
-        tenderAmount: tenderNum,
+        paymentMethod: primaryMethodLabel,
+        tenderAmount: isSplitMode
+          ? tenderNum
+          : activeMethod === 'CASH'
+          ? Math.max(payAmount, tenderNum)
+          : payAmount,
         changeAmount: changeDue,
         cashierName: user?.fullName || 'Admin',
         time: new Date().toLocaleTimeString('fr-FR'),
         date: new Date().toLocaleDateString('fr-FR'),
+        shouldPrint: printReceiptOnSuccess,
       };
 
-      clearCart();
+      if (!existingOrder) {
+        clearCart();
+      }
+      await refreshShift();
+      await refreshDashboard();
+      await refreshOfflineCount();
       onSuccess(receiptData);
       onClose();
     } catch (err: any) {
-      console.error('Payment failure:', err);
-      setErrorMessage(err.message || 'فشلت معالجة عملية الدفع');
+      if (createdOrder?.id && !activeOrderId && !createdOrder.offline) {
+        setActiveOrderId(createdOrder.id, createdOrder.orderNumber);
+      }
+      const msg = err?.message || t('فشلت معالجة عملية الدفع', 'Échec du paiement');
+      if (msg.includes('وردية الصندوق')) {
+        await refreshShift();
+      } else {
+        console.error('Payment failure:', err);
+      }
+      setErrorMessage(msg);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const methods: { id: PaymentMethod; ar: string; fr: string; icon: any }[] = [
+    { id: 'CASH', ar: 'نقدي', fr: 'Espèces', icon: Banknote },
+    { id: 'CARD', ar: 'بطاقة بنكية', fr: 'Carte', icon: CreditCard },
+    { id: 'BANK_TRANSFER', ar: 'تحويل بنكي', fr: 'Virement', icon: Landmark },
+    { id: 'BARIDIMOB', ar: 'بريدي موب', fr: 'BaridiMob', icon: Smartphone },
+    { id: 'CCP', ar: 'حساب CCP', fr: 'CCP', icon: Building },
+    { id: 'OTHER', ar: 'أخرى', fr: 'Autre', icon: Wallet },
+  ];
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 select-none">
-      <div className="bg-white border-2 border-slate-200 rounded-3xl max-w-2xl w-full p-6 shadow-2xl space-y-5 text-slate-900">
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-2.5 sm:p-4 select-none overflow-y-auto">
+      <div
+        data-testid="payment-modal"
+        className="bg-[#222222] border border-[#C6A15B]/50 rounded-3xl max-w-2xl w-full p-4 sm:p-6 shadow-2xl space-y-4 text-[#F7F3EA] max-h-[95vh] overflow-y-auto no-scrollbar my-auto"
+      >
         {/* Header */}
-        <div className="flex items-center justify-between border-b-2 border-slate-200 pb-3">
+        <div className="flex items-center justify-between border-b border-[#33302B] pb-3">
           <div>
-            <h2 className="text-2xl font-black text-black flex items-center gap-2">
-              <Banknote className="w-7 h-7 text-blue-600" />
-              <span>تسديد الفاتورة (Encaissement)</span>
+            <h2 className="text-xl sm:text-2xl font-black text-[#C6A15B] flex items-center gap-2">
+              <Banknote className="w-6 h-6" />
+              <span>{t('تسديد الفاتورة', 'Encaissement')}</span>
             </h2>
-            <p className="text-sm font-bold text-slate-500 mt-0.5">
-              {orderType === 'DINE_IN' && selectedTable
-                ? `الطاولة ${selectedTable.tableNumber}`
+            <p className="text-xs font-bold text-[#A8A29E] mt-0.5">
+              {existingOrder
+                ? `${existingOrder.orderNumber}`
+                : orderType === 'DINE_IN' && selectedTable
+                ? t(`الطاولة ${selectedTable.tableNumber}`, `Table ${selectedTable.tableNumber}`)
                 : orderType === 'DELIVERY'
-                ? 'طلب توصيل'
-                : 'طلب محمول'}
+                ? t('طلب توصيل', 'Livraison')
+                : t('طلب محمول', 'À emporter')}
             </p>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 transition"
+            className="p-2 rounded-xl bg-[#171717] border border-[#33302B] text-[#A8A29E] hover:text-[#F7F3EA] cursor-pointer"
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
+        {/* Closed Shift Guard Warning */}
+        {!isShiftOpen && (
+          <div className="p-3.5 rounded-2xl bg-amber-950/60 border border-[#C6A15B] text-[#F7F3EA] flex flex-wrap items-center justify-between gap-2 text-xs sm:text-sm font-bold">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-[#C6A15B] shrink-0" />
+              <span>
+                {t(
+                  'الصندوق مغلق حالياً! يجب فتح وردية قبل تسجيل عمليات الدفع.',
+                  'Caisse fermée ! Ouvrez un shift avant d’encaisser.'
+                )}
+              </span>
+            </div>
+            {onOpenCashRegisterModal && (
+              <button
+                type="button"
+                onClick={onOpenCashRegisterModal}
+                className="px-3 py-1.5 rounded-xl bg-[#C6A15B] text-[#171717] font-black text-xs cursor-pointer"
+              >
+                {t('فتح الوردية الآن', 'Ouvrir Caisse')}
+              </button>
+            )}
+          </div>
+        )}
+
         {errorMessage && (
-          <div className="p-3 rounded-2xl bg-red-50 border-2 border-red-200 text-red-700 text-sm text-center font-black">
+          <div className="p-3 rounded-2xl bg-red-950/70 border border-red-500/60 text-red-200 text-xs sm:text-sm text-center font-black">
             {errorMessage}
           </div>
         )}
 
-        {/* Big Displays: Total, Tendered, Change (24-30px fonts) */}
-        <div className="grid grid-cols-3 gap-3 bg-slate-50 p-4 rounded-2xl border-2 border-slate-200 text-center">
-          <div className="p-3 rounded-xl bg-white border-2 border-slate-200 shadow-sm">
-            <span className="text-xs text-slate-500 uppercase font-black block">
-              المجموع المطلوب
+        {/* Summary KPIs */}
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 bg-[#171717] p-3 rounded-2xl border border-[#33302B] text-center">
+          <div className="p-2.5 rounded-xl bg-[#222222] border border-[#33302B]">
+            <span className="text-[11px] text-[#A8A29E] font-bold block">
+              {t('المتبقي المطلوب', 'Montant Dû')}
             </span>
-            <span className="text-2xl font-black text-blue-700">
-              {total.toLocaleString()} <span className="text-sm font-bold text-slate-600">DA</span>
-            </span>
-          </div>
-
-          <div className="p-3 rounded-xl bg-white border-2 border-slate-200 shadow-sm">
-            <span className="text-xs text-slate-500 uppercase font-black block">
-              المبلغ المقبوض
-            </span>
-            <span className="text-2xl font-black text-slate-900">
-              {tenderNum.toLocaleString()} <span className="text-sm font-bold text-slate-600">DA</span>
+            <span className="text-lg sm:text-2xl font-black text-[#C6A15B] font-mono tabular-nums">
+              {amountDue.toLocaleString()} <span className="text-xs text-[#A8A29E]">DA</span>
             </span>
           </div>
 
-          <div className="p-3 rounded-xl bg-white border-2 border-slate-200 shadow-sm">
-            <span className="text-xs text-slate-500 uppercase font-black block">
-              الباقي للزبون
+          <div className="p-2.5 rounded-xl bg-[#222222] border border-[#33302B]">
+            <span className="text-[11px] text-[#A8A29E] font-bold block">
+              {t('المبلغ المدفوع الآن', 'Montant Payé')}
             </span>
-            <span className="text-2xl font-black text-emerald-700">
-              {changeDue.toLocaleString()} <span className="text-sm font-bold text-slate-600">DA</span>
+            <span className="text-lg sm:text-2xl font-black text-[#F7F3EA] font-mono tabular-nums">
+              {payAmount.toLocaleString()} <span className="text-xs text-[#A8A29E]">DA</span>
+            </span>
+          </div>
+
+          <div className="p-2.5 rounded-xl bg-[#222222] border border-[#33302B]">
+            <span className="text-[11px] text-[#A8A29E] font-bold block">
+              {t('الباقي للزبون', 'Rendu Monnaie')}
+            </span>
+            <span className="text-lg sm:text-2xl font-black text-emerald-400 font-mono tabular-nums">
+              {changeDue.toLocaleString()} <span className="text-xs text-[#A8A29E]">DA</span>
             </span>
           </div>
         </div>
 
-        {/* Payment Methods Tabs */}
+        {/* Full / Partial / Split Payment Mode Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#171717] px-3 py-2 rounded-xl border border-[#33302B] text-xs">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="partial-payment-toggle"
+                checked={isPartialMode}
+                disabled={isSplitMode}
+                onChange={(e) => {
+                  setIsPartialMode(e.target.checked);
+                  if (!e.target.checked) {
+                    setPayAmountInput(String(amountDue));
+                  }
+                }}
+                className="w-4 h-4 accent-[#C6A15B]"
+              />
+              <span>{t('دفع جزئي (Partial Payment)', 'Paiement partiel')}</span>
+            </label>
+
+            <label className="flex items-center gap-2 font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="split-payment-toggle"
+                checked={isSplitMode}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  setIsSplitMode(enabled);
+                  if (enabled) {
+                    setIsPartialMode(false);
+                    setSplitLegs([]);
+                    setSplitAmountInput(String(amountDue));
+                    setTenderInput(String(amountDue));
+                  }
+                }}
+                className="w-4 h-4 accent-[#C6A15B]"
+              />
+              <span className="text-[#C6A15B]">
+                {t('دفع مقسّم متعدد الطرق (Split)', 'Paiement mixte / fractionné')}
+              </span>
+            </label>
+          </div>
+
+          {isPartialMode && !isSplitMode && (
+            <div className="flex items-center gap-2">
+              <span className="text-[#A8A29E] font-bold">{t('المبلغ:', 'Montant :')}</span>
+              <input
+                type="number"
+                min="1"
+                max={amountDue}
+                value={payAmountInput}
+                onChange={(e) => {
+                  setPayAmountInput(e.target.value);
+                  setTenderInput(e.target.value);
+                }}
+                className="w-28 bg-[#222222] border border-[#C6A15B]/60 rounded-lg px-2.5 py-1 text-sm font-black font-mono text-[#C6A15B]"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Split Payment Legs Builder */}
+        {isSplitMode && (
+          <div className="bg-[#171717] border border-[#C6A15B]/40 rounded-2xl p-3 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-black text-[#C6A15B]">
+                {t(
+                  `الدفعات المضافة (${splitLegs.length}) • المتبقي للتوزيع: ${remainingForSplit.toLocaleString()} DA`,
+                  `Paiements ajoutés (${splitLegs.length}) • Reste: ${remainingForSplit.toLocaleString()} DA`
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  data-testid="split-amount-input"
+                  min="1"
+                  max={remainingForSplit || amountDue}
+                  value={splitAmountInput}
+                  onChange={(e) => {
+                    setSplitAmountInput(e.target.value);
+                    setTenderInput(e.target.value);
+                  }}
+                  placeholder={t('المبلغ', 'Montant')}
+                  className="w-28 bg-[#222222] border border-[#C6A15B]/60 rounded-lg px-2.5 py-1.5 text-sm font-black font-mono text-[#C6A15B]"
+                />
+                <input
+                  type="text"
+                  data-testid="split-ref-input"
+                  value={splitRefInput}
+                  onChange={(e) => setSplitRefInput(e.target.value)}
+                  placeholder={t('مرجع (اختياري)', 'Réf (optionnel)')}
+                  className="w-28 bg-[#222222] border border-[#33302B] rounded-lg px-2 py-1.5 text-xs text-[#F7F3EA]"
+                />
+                <button
+                  type="button"
+                  data-testid="add-split-leg-btn"
+                  onClick={handleAddSplitLeg}
+                  disabled={remainingForSplit <= 0}
+                  className="px-3 py-1.5 rounded-xl bg-[#C6A15B] hover:bg-[#D4B475] disabled:opacity-40 text-[#171717] font-black text-xs flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{t('إضافة دفعة', 'Ajouter')}</span>
+                </button>
+              </div>
+            </div>
+
+            {splitLegs.length > 0 && (
+              <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                {splitLegs.map((leg) => (
+                  <div
+                    key={leg.id}
+                    data-testid={`split-leg-${leg.method}`}
+                    className="flex items-center justify-between bg-[#222222] border border-[#33302B] rounded-xl px-3 py-1.5 text-xs"
+                  >
+                    <div className="flex items-center gap-2 font-bold">
+                      <span className="px-2 py-0.5 rounded bg-[#C6A15B]/20 text-[#C6A15B] font-mono">
+                        {leg.method}
+                      </span>
+                      <span className="font-mono font-black text-[#F7F3EA]">
+                        {leg.amount.toLocaleString()} DA
+                      </span>
+                      {leg.changeAmount > 0 && (
+                        <span className="text-emerald-400">
+                          ({t('باقي', 'Rendu')}: {leg.changeAmount.toLocaleString()} DA)
+                        </span>
+                      )}
+                      {leg.transactionRef && (
+                        <span className="text-[#A8A29E] font-mono">#{leg.transactionRef}</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveSplitLeg(leg.id)}
+                      className="text-red-400 hover:text-red-300 p-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Payment Methods */}
         <div>
-          <label className="block text-sm font-black text-black mb-2">
-            طريقة الدفع (Mode de paiement):
+          <label className="block text-xs font-black text-[#A8A29E] mb-2">
+            {t('طريقة الدفع:', 'Mode de paiement :')}
           </label>
-          <div className="grid grid-cols-4 gap-2.5">
-            {[
-              { id: 'CASH', label: 'نقدي (Espèces)', icon: Banknote },
-              { id: 'CARD', label: 'بطاقة بنكية (Carte)', icon: CreditCard },
-              { id: 'BARIDIMOB', label: 'بريدي موب (BaridiMob)', icon: Smartphone },
-              { id: 'CCP', label: 'حساب CCP / صك', icon: Building },
-            ].map((m) => {
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            {methods.map((m) => {
               const Icon = m.icon;
               const isSelected = activeMethod === m.id;
               return (
                 <button
                   key={m.id}
-                  onClick={() => {
-                    setActiveMethod(m.id as any);
-                    setPaymentEntries([{ method: m.id as any, amount: total }]);
-                  }}
-                  className={`p-3 rounded-2xl border-2 flex flex-col items-center justify-center gap-1.5 transition text-sm font-black cursor-pointer ${
+                  type="button"
+                  data-testid={`pay-method-${m.id}`}
+                  onClick={() => setActiveMethod(m.id)}
+                  className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1 transition text-[11px] font-black cursor-pointer ${
                     isSelected
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-md ring-2 ring-blue-300'
-                      : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-blue-50/50 hover:border-blue-300'
+                      ? 'bg-[#C6A15B] text-[#171717] border-[#C6A15B] shadow'
+                      : 'bg-[#171717] text-[#F7F3EA] border-[#33302B] hover:border-[#C6A15B]/50'
                   }`}
                 >
-                  <Icon className="w-6 h-6" />
-                  <span className="text-center">{m.label}</span>
+                  <Icon className="w-5 h-5" />
+                  <span className="text-center leading-tight">{t(m.ar, m.fr)}</span>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Numpad & Quick Cash Notes (100, 200, 500, 1000, 2000 DA) */}
+        {/* Cash Notes & Touch Numpad */}
         {activeMethod === 'CASH' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-            {/* Quick Cash Banknotes */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
             <div className="space-y-2">
-              <label className="block text-xs font-black text-slate-600">
-                أوراق نقدية سريعة (Billets):
+              <label className="block text-xs font-bold text-[#A8A29E]">
+                {t('أوراق نقدية سريعة:', 'Billets rapides :')}
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {[100, 200, 500, 1000, 2000].map((noteVal) => (
                   <button
                     key={noteVal}
+                    type="button"
                     onClick={() => handleAddTender(noteVal)}
-                    className="p-3 rounded-xl bg-slate-100 hover:bg-blue-50 border-2 border-slate-200 hover:border-blue-300 text-blue-700 font-black text-base active:scale-95 transition shadow-sm"
+                    className="p-2.5 rounded-xl bg-[#171717] hover:border-[#C6A15B] border border-[#33302B] text-[#C6A15B] font-black text-sm active:scale-95 transition font-mono cursor-pointer"
                   >
                     +{noteVal} DA
                   </button>
                 ))}
                 <button
-                  onClick={() => setTenderInput(String(total))}
-                  className="p-3 rounded-xl bg-blue-50 hover:bg-blue-100 border-2 border-blue-300 text-blue-800 font-black text-sm active:scale-95 transition shadow-sm"
+                  type="button"
+                  onClick={() => setTenderInput(String(payAmount))}
+                  className="p-2.5 rounded-xl bg-[#C6A15B]/20 hover:bg-[#C6A15B]/30 border border-[#C6A15B]/60 text-[#C6A15B] font-black text-xs active:scale-95 transition cursor-pointer"
                 >
-                  المبلغ الدقيق
+                  {t('المبلغ الدقيق', 'Exact')}
                 </button>
               </div>
             </div>
 
-            {/* Touch Numpad */}
             <div className="grid grid-cols-4 gap-1.5 font-mono text-base">
-              {['7', '8', '9', 'C', '4', '5', '6', 'EXACT', '1', '2', '3', '00', '0', '.'].map(
-                (btn) => (
-                  <button
-                    key={btn}
-                    onClick={() => handleNumpadPress(btn)}
-                    className="p-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl text-slate-900 font-black active:scale-95 transition flex items-center justify-center text-lg"
-                  >
-                    {btn}
-                  </button>
-                )
-              )}
+              {['7', '8', '9', 'C', '4', '5', '6', 'EXACT', '1', '2', '3', '00', '0', '.'].map((btn) => (
+                <button
+                  key={btn}
+                  type="button"
+                  onClick={() => handleNumpadPress(btn)}
+                  className="p-2 bg-[#171717] hover:border-[#C6A15B] border border-[#33302B] rounded-xl text-[#F7F3EA] font-black active:scale-95 transition flex items-center justify-center text-sm cursor-pointer"
+                >
+                  {btn}
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        {/* Bottom Options & Submit */}
-        <div className="pt-3 border-t-2 border-slate-200 flex items-center justify-between gap-4">
-          <label className="flex items-center gap-2.5 cursor-pointer text-sm font-bold text-slate-700">
+        {/* Submit Footer */}
+        <div className="pt-3 border-t border-[#33302B] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#A8A29E]">
             <input
               type="checkbox"
               checked={printReceiptOnSuccess}
               onChange={(e) => setPrintReceiptOnSuccess(e.target.checked)}
-              className="rounded bg-slate-100 border-slate-300 text-blue-600 focus:ring-blue-500 w-5 h-5 cursor-pointer"
+              className="w-4 h-4 accent-[#C6A15B] cursor-pointer"
             />
-            <Printer className="w-5 h-5 text-blue-600" />
-            <span>طباعة الفاتورة تلقائياً عند الدفع</span>
+            <Printer className="w-4 h-4 text-[#C6A15B]" />
+            <span>{t('طباعة الوصل تلقائياً', 'Imprimer le reçu automatiquement')}</span>
           </label>
 
           <button
+            type="button"
+            data-testid="confirm-payment-btn"
             onClick={handleCompletePayment}
-            disabled={isProcessing}
-            className="flex-1 py-4 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black text-xl rounded-2xl shadow-xl flex items-center justify-center gap-2 active:scale-95 transition cursor-pointer"
+            disabled={isProcessing || !isShiftOpen}
+            className="py-3.5 px-6 bg-[#C6A15B] hover:bg-[#D4B475] disabled:opacity-40 text-[#171717] font-black text-base rounded-2xl shadow-xl flex items-center justify-center gap-2 active:scale-95 transition cursor-pointer"
           >
             {isProcessing ? (
-              <span>جاري المعالجة...</span>
+              <span>{t('جاري المعالجة...', 'Traitement...')}</span>
             ) : (
               <>
-                <Check className="w-6 h-6 stroke-[3]" />
-                <span>تأكيد الدفع (Valider le paiement)</span>
+                <Check className="w-5 h-5 stroke-[3]" />
+                <span>{t('تأكيد الدفع والتسديد', 'Confirmer l’Encaissement')}</span>
               </>
             )}
           </button>

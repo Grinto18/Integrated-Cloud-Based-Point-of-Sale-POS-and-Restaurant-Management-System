@@ -12,6 +12,7 @@ export const ExpensesManager: React.FC = () => {
   const [amount, setAmount] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     loadExpenses();
@@ -27,7 +28,11 @@ export const ExpensesManager: React.FC = () => {
   };
 
   const handleAddExpense = async () => {
-    if (!amount || !description) return;
+    setErrorMsg(null);
+    if (!amount || !description) {
+      setErrorMsg('يرجى ملء المبلغ والبيان');
+      return;
+    }
     try {
       await api.createExpense({
         category,
@@ -41,37 +46,63 @@ export const ExpensesManager: React.FC = () => {
       setDescription('');
       await loadExpenses();
     } catch (err: any) {
-      alert(err.message || 'فشل تسجيل المصروف');
+      setErrorMsg(err.message || 'فشل تسجيل المصروف');
     }
   };
 
   const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-84px)] overflow-hidden bg-slate-50 p-5 select-none text-slate-900">
-      <div className="flex items-center justify-between gap-4 bg-white p-4 rounded-3xl border-2 border-slate-200 shadow-sm shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="font-black text-xl text-black flex items-center gap-2 pl-3 border-l-2 border-slate-200">
-            <Receipt className="w-6 h-6 text-blue-600" />
-            <span>المصاريف والنفقات (Charges)</span>
+    <div className="flex-1 flex flex-col h-full overflow-y-auto no-scrollbar smooth-scroll bg-slate-50 p-2.5 sm:p-5 select-none text-slate-900 space-y-3 sm:space-y-4">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3 sm:p-4 rounded-2xl sm:rounded-3xl border-2 border-slate-200 shadow-sm shrink-0">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+          <div className="font-black text-base sm:text-xl text-black flex items-center gap-2 pl-0 sm:pl-3 sm:border-l-2 sm:border-slate-200">
+            <Receipt className="w-5 h-5 sm:w-6 sm:h-6 text-blue-600 shrink-0" />
+            <span className="whitespace-nowrap">المصاريف والنفقات</span>
           </div>
 
-          <div className="text-sm bg-slate-100 px-4 py-2 rounded-2xl border border-slate-200 text-slate-800 font-bold">
-            الإجمالي: <span className="font-black text-red-600 text-lg">{totalExpenses.toLocaleString()} DA</span>
+          <div className="text-xs sm:text-sm bg-slate-100 px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl sm:rounded-2xl border border-slate-200 text-slate-800 font-bold">
+            الإجمالي: <span className="font-black text-red-600 text-sm sm:text-lg font-mono">{totalExpenses.toLocaleString()} DA</span>
           </div>
         </div>
 
         <button
           onClick={() => setShowAddModal(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-2xl text-sm font-black transition flex items-center gap-2 shadow-lg cursor-pointer"
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-black transition flex items-center justify-center gap-1.5 shadow-lg cursor-pointer whitespace-nowrap"
         >
-          <Plus className="w-5 h-5 stroke-[3]" />
+          <Plus className="w-4 h-4 sm:w-5 sm:h-5 stroke-[3]" />
           <span>مصروف جديد</span>
         </button>
       </div>
 
-      <div className="flex-1 bg-white rounded-3xl border-2 border-slate-200 overflow-hidden flex flex-col mt-4 shadow-sm">
-        <div className="overflow-x-auto flex-1 no-scrollbar">
+      <div className="bg-white rounded-2xl sm:rounded-3xl border-2 border-slate-200 overflow-hidden flex flex-col shadow-sm">
+        {/* Mobile View: Cards */}
+        <div className="md:hidden divide-y divide-slate-100 p-2.5 space-y-2">
+          {expenses.length === 0 ? (
+            <div className="text-center py-8 text-slate-400 font-bold text-xs sm:text-sm">لا توجد مصاريف مسجلة</div>
+          ) : (
+            expenses.map((e) => (
+              <div key={e.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-lg text-[10px] font-black">
+                    {e.category}
+                  </span>
+                  <span className="font-black text-red-600 font-mono text-sm">
+                    {Number(e.amount).toLocaleString()} DA
+                  </span>
+                </div>
+                <div className="font-black text-slate-900 text-sm">{e.description}</div>
+                <div className="flex items-center justify-between pt-1 border-t border-slate-200 text-slate-500 font-medium text-[11px]">
+                  <span>{e.date}</span>
+                  <span>المسجل: {e.userName || '—'}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop View: Table */}
+        <div className="hidden md:block overflow-x-auto no-scrollbar">
           <table className="w-full text-right text-sm">
             <thead className="bg-slate-100 text-slate-800 border-b-2 border-slate-200 font-black">
               <tr>
@@ -112,6 +143,12 @@ export const ExpensesManager: React.FC = () => {
                 <X className="w-6 h-6" />
               </button>
             </div>
+
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-3 py-2 text-xs font-bold">
+                {errorMsg}
+              </div>
+            )}
 
             <div className="space-y-3 font-bold text-sm">
               <div>

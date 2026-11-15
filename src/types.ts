@@ -9,6 +9,7 @@ export interface User {
   role: Role;
   phone?: string | null;
   pin?: string;
+  hasPin?: boolean;
   isActive?: boolean;
 }
 
@@ -46,6 +47,9 @@ export interface ProductRecipeItem {
   ingredientId: number;
   quantity: string | number;
   ingredientName?: string;
+  ingredientNameFr?: string | null;
+  ingredientUnit?: string | null;
+  ingredientCostPerUnit?: string | number | null;
 }
 
 export interface Product {
@@ -71,12 +75,13 @@ export interface RestaurantTable {
   tableNumber: string;
   zone: string;
   capacity: number;
-  status: 'AVAILABLE' | 'OCCUPIED' | 'WAITING_PAYMENT' | 'RESERVED' | 'CLEANING' | 'INACTIVE';
+  status: 'AVAILABLE' | 'OCCUPIED' | 'READY' | 'WAITING_PAYMENT' | 'RESERVED' | 'CLEANING' | 'INACTIVE';
   currentOrderId?: number | null;
   activeOrder?: {
     id: number;
     orderNumber: string;
     total: number;
+    paidAmount?: number;
     status: string;
     paymentStatus: string;
     createdAt?: string;
@@ -96,6 +101,7 @@ export interface CartItem {
   station: string;
   selectedVariant?: ProductVariant;
   selectedAddons?: ProductAddon[];
+  priceOverrideReason?: string;
 }
 
 export interface Order {
@@ -105,19 +111,25 @@ export interface Order {
   type: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
   tableId?: number | null;
   tableNumber?: string;
+  table?: { tableNumber: string } | null;
   customerId?: number | null;
   customerName?: string;
+  customer?: { name: string; phone?: string } | null;
   customerPhone?: string;
-  status: 'NEW' | 'CONFIRMED' | 'PREPARING' | 'READY' | 'COMPLETED' | 'CANCELLED';
+  status: 'NEW' | 'CONFIRMED' | 'PREPARING' | 'READY' | 'COMPLETED' | 'CANCELLED' | 'REFUNDED';
   subtotal: string | number;
   discount: string | number;
   deliveryFee: string | number;
+  taxRate?: string | number;
+  taxAmount?: string | number;
+  deliveryAddress?: string | null;
   total: string | number;
   paidAmount: string | number;
   changeAmount: string | number;
-  paymentStatus: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID';
+  paymentStatus: 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'REFUNDED';
   cashierId?: number | null;
   cashierName?: string;
+  cashier?: { fullName: string } | null;
   waiterId?: number | null;
   notes?: string | null;
   isHeld: boolean;
@@ -145,14 +157,33 @@ export interface OrderItem {
   addonsJson?: string | null;
 }
 
+export type PaymentMethod = 'CASH' | 'CARD' | 'BANK_TRANSFER' | 'CCP' | 'BARIDIMOB' | 'OTHER';
+
 export interface PaymentRecord {
   id?: number;
   orderId: number;
-  method: 'CASH' | 'CARD' | 'CCP' | 'BARIDIMOB' | 'OTHER';
+  method: PaymentMethod | 'REFUND';
   amount: number;
   tenderAmount?: number;
   changeAmount?: number;
   transactionRef?: string;
+}
+
+export interface CashierDashboardMetrics {
+  activeOrdersCount: number;
+  preparingOrdersCount: number;
+  readyOrdersCount: number;
+  heldOrdersCount: number;
+  shiftTotalSales: number;
+  shiftStatus: 'OPEN' | 'CLOSED';
+  shiftNumber: string | number | null;
+  expectedCash: number;
+  tablesSummary: {
+    total: number;
+    available: number;
+    occupied: number;
+    waitingPayment: number;
+  };
 }
 
 export interface CashShift {
@@ -199,6 +230,23 @@ export interface Ingredient {
   costPerUnit: string | number;
   supplierId?: number | null;
   supplierName?: string;
+}
+
+export interface InventoryMovement {
+  id: number;
+  ingredientId: number;
+  ingredientNameAr?: string | null;
+  ingredientNameFr?: string | null;
+  unit?: string | null;
+  type: string;
+  quantity: string | number;
+  cost?: string | number | null;
+  referenceType?: string | null;
+  referenceId?: number | null;
+  performedBy?: number | null;
+  performedByName?: string | null;
+  notes?: string | null;
+  createdAt: string;
 }
 
 export interface Supplier {
@@ -262,6 +310,15 @@ export interface AuditLog {
   createdAt: string;
 }
 
+export interface PaginatedAuditLogsResponse {
+  items: AuditLog[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  availableActions: string[];
+}
+
 export interface RestaurantSettings {
   restaurant_name: string;
   restaurant_brand: string;
@@ -272,21 +329,109 @@ export interface RestaurantSettings {
   tax_rate: string;
   default_language: string;
   theme: string;
+  receipt_header?: string;
+  receipt_footer?: string;
+  receipt_show_tax?: string;
+  low_stock_alert_enabled?: string;
+  low_stock_alert_threshold?: string;
+  auto_deduct_stock?: string;
+  printer_name?: string;
+  printer_driver?: string;
+  printer_connection_type?: string;
+  printer_network_ip?: string;
+  printer_network_port?: string;
+  printer_arabic_encoding?: string;
+  paper_type?: string;
+  printable_width?: string;
+  printer_copies?: string;
+  print_method?: string;
+  printer_feed_after?: string;
+  printer_cut_paper?: string;
+  printer_cash_drawer?: string;
+  backup_auto_enabled?: string;
+  backup_interval_hours?: string;
+  backup_retention_count?: string;
+}
+
+export type BackupKind = 'MANUAL' | 'DAILY' | 'WEEKLY' | 'SHUTDOWN' | 'PRE_RESTORE' | 'SCHEDULED';
+export type BackupHealthStatus = 'VERIFIED' | 'FAILED' | 'CORRUPTED' | 'UNVERIFIED';
+
+export interface BackupRecordCounts {
+  orders: number;
+  order_items: number;
+  payments: number;
+  ingredients: number;
+  users: number;
+  products: number;
+  cash_shifts: number;
+}
+
+export interface BackupVerificationResult {
+  filename: string;
+  filePath: string;
+  valid: boolean;
+  status: BackupHealthStatus;
+  sizeBytes: number;
+  integrityCheck: string;
+  canOpen: boolean;
+  missingTables: string[];
+  recordCounts: BackupRecordCounts;
+  verifiedAt: string;
+  error?: string;
+}
+
+export interface BackupManifestEntry {
+  filename: string;
+  type: BackupKind;
+  createdAt: string;
+  sizeBytes: number;
+  status: BackupHealthStatus;
+  integrityCheck: string;
+  recordCounts?: BackupRecordCounts;
+  verifiedAt?: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface BackupsOverviewResponse {
+  backups: BackupManifestEntry[];
+  lastVerifiedBackup: BackupManifestEntry | null;
+  lastAttempt: BackupManifestEntry | null;
+  config: {
+    autoEnabled: boolean;
+    intervalHours: number;
+    retentionCount: number;
+  };
+  backupDirectory: string;
+}
+
+export interface BackupRestoreResponse {
+  success: boolean;
+  restoredFrom: string;
+  preRestoreBackup: string;
+  postRestoreVerification: BackupVerificationResult;
+  restoredAt: string;
 }
 
 // -------------------------------------------------------------
-// Thermal Printer Profiles & Diagnostics (CAFETERIA 80mm - Windows)
+// Thermal Printer Profiles, Connections & Print Job Queue
 // -------------------------------------------------------------
 export type PaperType = '80mm' | '58mm' | 'A4';
 export type PrintMethod = 'BROWSER' | 'ESCPOS_RAW' | 'LOCAL_BRIDGE';
+export type PrinterConnectionType = 'WINDOWS_SPOOLER' | 'NETWORK_IP' | 'USB' | 'BROWSER';
+export type ArabicEscPosEncoding = 'CP864' | 'WINDOWS_1256' | 'UTF8';
 
 export interface PrinterProfile {
   name: string; // e.g. "CAFETERIA 80mm"
   printerName: string; // Windows printer name: "CAFETERIA"
   driver: string; // Driver name: "80Normal"
-  paperType: PaperType; // 80mm
-  paperWidth: number; // 80 (mm)
-  printableWidth: number; // 72 (mm) - standard 576 dots
+  connectionType?: PrinterConnectionType;
+  networkIp?: string;
+  networkPort?: number;
+  arabicEncoding?: ArabicEscPosEncoding;
+  paperType: PaperType; // 80mm or 58mm
+  paperWidth: number; // 80 or 58 (mm)
+  printableWidth: number; // 70 / 72 (mm) for 80mm, 48 (mm) for 58mm
   margins: number; // 0 (mm)
   scale: number; // 100 (%)
   orientation: 'PORTRAIT' | 'LANDSCAPE';
@@ -296,14 +441,77 @@ export interface PrinterProfile {
   cutPaper: boolean; // true
   cashDrawer: boolean; // true
   printMethod: PrintMethod;
-  bridgeUrl?: string; // e.g. "ws://localhost:8182" or "http://localhost:8181"
+  bridgeUrl?: string; // e.g. "ws://localhost:8182"
+}
+
+export interface SystemPrinterInfo {
+  name: string;
+  driverName?: string;
+  portName?: string;
+  status?: string;
+  isDefault?: boolean;
+  connectionType: PrinterConnectionType;
+}
+
+export interface PrintJobRecord {
+  id: number;
+  orderId?: number | null;
+  orderNumber: string;
+  jobType: string;
+  printerName: string;
+  connectionType: string;
+  targetIp?: string | null;
+  targetPort?: number | null;
+  copies: number;
+  paperWidth: string;
+  status: 'PENDING' | 'PROCESSING' | 'PRINTED' | 'FAILED';
+  errorMessage?: string | null;
+  isReprint: boolean;
+  jobKey?: string | null;
+  attempts: number;
+  requestedBy?: number | null;
+  spoolerAccepted: boolean;
+  confirmedAt?: string | null;
+  updatedAt?: string | null;
+  payloadPreview?: string | null;
+  createdAt: string;
 }
 
 export interface PrintJobResult {
   success: boolean;
-  jobId?: string;
-  method: PrintMethod;
-  status: 'PRINTED' | 'FAILED' | 'PENDING';
+  jobId?: string | number;
+  method: PrintMethod | PrinterConnectionType | 'DEDUP';
+  status: 'PRINTED' | 'FAILED' | 'PENDING' | 'PROCESSING';
+  spoolerAccepted?: boolean;
+  hardwareConfirmed?: boolean;
   error?: string;
   timestamp: string;
+}
+
+export interface DesktopRuntimeStatus {
+  appName: string;
+  appVersion: string;
+  platform: string;
+  isDesktop: boolean;
+  appDataDir: string;
+  dbPath: string;
+  dbExists: boolean;
+  dbSizeBytes: number;
+  dbWritable: boolean;
+  backupDir: string;
+  backupDirExists: boolean;
+  backupDirWritable: boolean;
+  integrityCheck: string;
+  tablesCount: number;
+  missingTables: string[];
+  usersCount: number;
+  needsInitialAdminSetup: boolean;
+  pendingFinancialOps: {
+    openShiftsCount: number;
+    unpaidActiveOrdersCount: number;
+    openSyncConflictsCount: number;
+    pendingPrintJobsCount: number;
+    canUpdateSafely: boolean;
+    blockingReasons: string[];
+  };
 }

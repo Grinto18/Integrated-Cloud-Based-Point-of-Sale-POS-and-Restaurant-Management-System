@@ -6,12 +6,11 @@ import {
   productAddons,
   restaurantSettings,
 } from './schema.ts';
-import { sql } from 'drizzle-orm';
+import { eq, and, notInArray } from 'drizzle-orm';
 
 export async function seedGrineRestaurantMenu() {
-  console.log('--- Starting Grine Restaurant Menu Seeding ---');
+  console.log('--- Starting Safe Non-Destructive Grine Restaurant Menu Sync ---');
 
-  // 1. Update Restaurant Brand & Settings
   const settingsData = [
     { key: 'restaurant_name', value: 'GRINE RESTAURANT' },
     { key: 'restaurant_brand', value: 'Grine Restaurant • مطعم قرين' },
@@ -22,27 +21,6 @@ export async function seedGrineRestaurantMenu() {
     { key: 'default_language', value: 'ar' },
   ];
 
-  for (const s of settingsData) {
-    await db
-      .insert(restaurantSettings)
-      .values(s)
-      .onConflictDoUpdate({
-        target: restaurantSettings.key,
-        set: { value: s.value },
-      });
-  }
-
-  // 2. Clear old menu data in reverse FK order
-  await db.execute(sql`DELETE FROM product_recipes`);
-  await db.execute(sql`DELETE FROM product_addons`);
-  await db.execute(sql`DELETE FROM product_variants`);
-  await db.execute(sql`DELETE FROM price_history`);
-  await db.execute(sql`DELETE FROM order_items`);
-  await db.execute(sql`DELETE FROM orders`);
-  await db.execute(sql`DELETE FROM products`);
-  await db.execute(sql`DELETE FROM categories`);
-
-  // 3. Define the exact 7 Categories requested by user
   const grineCategories = [
     {
       nameAr: 'قسم الطاكوس',
@@ -109,23 +87,12 @@ export async function seedGrineRestaurantMenu() {
     },
   ];
 
-  const catMap = new Map<string, number>();
-  for (const cat of grineCategories) {
-    const inserted = await db.insert(categories).values(cat).returning();
-    if (inserted[0]) {
-      catMap.set(cat.nameAr, inserted[0].id);
-    }
-  }
-
-  // 4. Products definition according to user brief
-  // 1. قسم الطاكوس
   const tacosProducts = [
     { nameAr: 'طاكوس بولي', nameFr: 'Tacos Poulet', price: 400, barcode: 'GR-TAC-01' },
     { nameAr: 'طاكوس لحم', nameFr: 'Tacos Viande', price: 600, barcode: 'GR-TAC-02' },
     { nameAr: 'طاكوس 3 أجبان', nameFr: 'Tacos 3 Fromages', price: 600, barcode: 'GR-TAC-03' },
   ];
 
-  // 2. قسم المأكولات البحرية
   const seafoodProducts = [
     { nameAr: 'بايلا', nameFr: 'Paella Royale', price: 2000, barcode: 'GR-SEA-01' },
     { nameAr: 'سلمون مشوي', nameFr: 'Saumon Grillé', price: 2500, barcode: 'GR-SEA-02' },
@@ -141,7 +108,6 @@ export async function seedGrineRestaurantMenu() {
     { nameAr: 'مشكل سمك 4 أشخاص', nameFr: 'Plateau Poisson 4 Pers', price: 9500, barcode: 'GR-SEA-12' },
   ];
 
-  // 3. الأطباق الرئيسية
   const mainDishesProducts = [
     { nameAr: 'لوبيا', nameFr: 'Loubia', price: 250, barcode: 'GR-PLT-01' },
     { nameAr: 'عدس', nameFr: 'Lentilles', price: 250, barcode: 'GR-PLT-02' },
@@ -159,7 +125,6 @@ export async function seedGrineRestaurantMenu() {
     { nameAr: 'شطيطحة دجاج', nameFr: 'Chtitha Poulet', price: 550, barcode: 'GR-PLT-14' },
   ];
 
-  // 4. المقبلات
   const appetizerProducts = [
     { nameAr: 'حمص', nameFr: 'Houmous', price: 250, barcode: 'GR-APP-01' },
     { nameAr: 'شربة فريك', nameFr: 'Chorba Frik', price: 200, barcode: 'GR-APP-02' },
@@ -173,7 +138,6 @@ export async function seedGrineRestaurantMenu() {
     { nameAr: 'سلطة جزائرية', nameFr: 'Salade Algérienne', price: 300, barcode: 'GR-APP-10' },
   ];
 
-  // 5. التحلية
   const dessertProducts = [
     { nameAr: 'موس شوكولا', nameFr: 'Mousse au Chocolat', price: 300, barcode: 'GR-DES-01' },
     { nameAr: 'سلطة فواكه', nameFr: 'Salade de Fruits', price: 400, barcode: 'GR-DES-02' },
@@ -184,14 +148,12 @@ export async function seedGrineRestaurantMenu() {
     { nameAr: 'كرام برولي', nameFr: 'Crème Brûlée', price: 300, barcode: 'GR-DES-07' },
   ];
 
-  // 6. المشروبات
   const drinkProducts = [
     { nameAr: 'عصير كوكتال', nameFr: 'Jus Cocktail', price: 250, barcode: 'GR-DRK-01' },
     { nameAr: 'مشروب غازي علبة 33cl', nameFr: 'Canette Soda 33cl', price: 150, barcode: 'GR-DRK-02' },
     { nameAr: 'ماء معدني 0.5L', nameFr: 'Eau Minérale 0.5L', price: 80, barcode: 'GR-DRK-03' },
   ];
 
-  // 7. البيتزا (كل بيتزا لها حجم L و XL)
   const pizzaProducts = [
     { nameAr: 'بيتزا مارغوريت', nameFr: 'Pizza Margherita', priceL: 350, priceXL: 700, barcode: 'GR-PIZ-01' },
     { nameAr: 'بيتزا تونة', nameFr: 'Pizza au Thon', priceL: 400, priceXL: 800, barcode: 'GR-PIZ-02' },
@@ -205,94 +167,198 @@ export async function seedGrineRestaurantMenu() {
     { nameAr: 'بيتزا رويال', nameFr: 'Pizza Royale', priceL: 1000, priceXL: 2000, barcode: 'GR-PIZ-10' },
   ];
 
-  // Insert standard products
-  const insertProductBatch = async (
-    items: { nameAr: string; nameFr: string; price: number; barcode: string }[],
-    categoryName: string,
-    station = 'MAIN_KITCHEN'
-  ) => {
-    const categoryId = catMap.get(categoryName)!;
-    for (const item of items) {
-      await db.insert(products).values({
-        categoryId,
+  db.transaction((tx) => {
+    // 1. Upsert brand settings safely
+    for (const s of settingsData) {
+      tx.insert(restaurantSettings)
+        .values(s)
+        .onConflictDoUpdate({
+          target: restaurantSettings.key,
+          set: { value: s.value, updatedAt: new Date().toISOString() },
+        })
+        .run();
+    }
+
+    // 2. Non-destructive category upsert (preserves foreign keys & existing IDs)
+    const catMap = new Map<string, number>();
+    const activeCatNames: string[] = [];
+
+    for (const cat of grineCategories) {
+      activeCatNames.push(cat.nameAr);
+      const existingCat = tx
+        .select()
+        .from(categories)
+        .where(eq(categories.nameAr, cat.nameAr))
+        .all();
+
+      if (existingCat.length > 0) {
+        tx.update(categories)
+          .set({
+            nameFr: cat.nameFr,
+            nameEn: cat.nameEn,
+            icon: cat.icon,
+            color: cat.color,
+            sortOrder: cat.sortOrder,
+            station: cat.station,
+            isActive: true,
+          })
+          .where(eq(categories.id, existingCat[0].id))
+          .run();
+        catMap.set(cat.nameAr, existingCat[0].id);
+      } else {
+        const inserted = tx
+          .insert(categories)
+          .values({ ...cat, isActive: true })
+          .returning()
+          .all();
+        catMap.set(cat.nameAr, inserted[0].id);
+      }
+    }
+
+    if (activeCatNames.length > 0) {
+      tx.update(categories)
+        .set({ isActive: false })
+        .where(notInArray(categories.nameAr, activeCatNames))
+        .run();
+    }
+
+    // 3. Upsert products safely without deleting historical rows referenced by orders/recipes
+    const syncedProductIds: number[] = [];
+
+    const upsertProduct = (item: {
+      categoryId: number;
+      nameAr: string;
+      nameFr: string;
+      price: number;
+      barcode: string;
+      station: string;
+    }): number => {
+      const byBarcode = item.barcode
+        ? tx.select().from(products).where(eq(products.barcode, item.barcode)).all()
+        : [];
+      const existingProd =
+        byBarcode.length > 0
+          ? byBarcode[0]
+          : tx.select().from(products).where(eq(products.nameAr, item.nameAr)).all()[0];
+
+      const payload = {
+        categoryId: item.categoryId,
         nameAr: item.nameAr,
         nameFr: item.nameFr,
         nameEn: item.nameAr,
         price: String(item.price),
         costPrice: String(Math.round(item.price * 0.4)),
         barcode: item.barcode,
-        station,
+        station: item.station,
         isAvailable: true,
-      });
-    }
-  };
+        updatedAt: new Date().toISOString(),
+      };
 
-  await insertProductBatch(tacosProducts, 'قسم الطاكوس');
-  await insertProductBatch(seafoodProducts, 'قسم المأكولات البحرية');
-  await insertProductBatch(mainDishesProducts, 'الأطباق الرئيسية');
-  await insertProductBatch(appetizerProducts, 'المقبلات');
-  await insertProductBatch(dessertProducts, 'التحلية', 'DESSERT');
-  await insertProductBatch(drinkProducts, 'المشروبات', 'DRINKS');
+      if (existingProd) {
+        tx.update(products).set(payload).where(eq(products.id, existingProd.id)).run();
+        syncedProductIds.push(existingProd.id);
+        return existingProd.id;
+      }
 
-  // Insert Pizza products with L and XL variants & Pizza addons
-  const pizzaCatId = catMap.get('البيتزا')!;
-  for (const p of pizzaProducts) {
-    const inserted = await db
-      .insert(products)
-      .values({
+      const inserted = tx.insert(products).values(payload).returning().all();
+      syncedProductIds.push(inserted[0].id);
+      return inserted[0].id;
+    };
+
+    const syncBatch = (
+      items: { nameAr: string; nameFr: string; price: number; barcode: string }[],
+      categoryName: string,
+      station = 'MAIN_KITCHEN'
+    ) => {
+      const categoryId = catMap.get(categoryName)!;
+      for (const item of items) {
+        upsertProduct({
+          categoryId,
+          nameAr: item.nameAr,
+          nameFr: item.nameFr,
+          price: item.price,
+          barcode: item.barcode,
+          station,
+        });
+      }
+    };
+
+    syncBatch(tacosProducts, 'قسم الطاكوس');
+    syncBatch(seafoodProducts, 'قسم المأكولات البحرية');
+    syncBatch(mainDishesProducts, 'الأطباق الرئيسية');
+    syncBatch(appetizerProducts, 'المقبلات');
+    syncBatch(dessertProducts, 'التحلية', 'DESSERT');
+    syncBatch(drinkProducts, 'المشروبات', 'DRINKS');
+
+    const pizzaCatId = catMap.get('البيتزا')!;
+    for (const p of pizzaProducts) {
+      const prodId = upsertProduct({
         categoryId: pizzaCatId,
         nameAr: p.nameAr,
         nameFr: p.nameFr,
-        nameEn: p.nameAr,
-        price: String(p.priceL),
-        costPrice: String(Math.round(p.priceL * 0.4)),
+        price: p.priceL,
         barcode: p.barcode,
         station: 'MAIN_KITCHEN',
-        isAvailable: true,
-      })
-      .returning();
+      });
 
-    const prodId = inserted[0].id;
+      const xlDiff = p.priceXL - p.priceL;
+      const desiredVariants = [
+        { nameAr: 'حجم L', nameFr: 'Taille L', priceAdjustment: '0' },
+        { nameAr: 'حجم XL', nameFr: 'Taille XL', priceAdjustment: String(xlDiff) },
+      ];
 
-    // Variants: L (base) and XL
-    const xlDiff = p.priceXL - p.priceL;
-    await db.insert(productVariants).values([
-      {
-        productId: prodId,
-        nameAr: 'حجم L',
-        nameFr: 'Taille L',
-        priceAdjustment: '0',
-      },
-      {
-        productId: prodId,
-        nameAr: 'حجم XL',
-        nameFr: 'Taille XL',
-        priceAdjustment: String(xlDiff),
-      },
-    ]);
+      for (const v of desiredVariants) {
+        const existingV = tx
+          .select()
+          .from(productVariants)
+          .where(and(eq(productVariants.productId, prodId), eq(productVariants.nameAr, v.nameAr)))
+          .all();
+        if (existingV.length > 0) {
+          tx.update(productVariants)
+            .set({ nameFr: v.nameFr, priceAdjustment: v.priceAdjustment })
+            .where(eq(productVariants.id, existingV[0].id))
+            .run();
+        } else {
+          tx.insert(productVariants).values({ productId: prodId, ...v }).run();
+        }
+      }
 
-    // Pizza Addons (إضافات البيتزا: صلصة بيضاء 100 دج، فرماج 150 دج)
-    await db.insert(productAddons).values([
-      {
-        productId: prodId,
-        nameAr: 'صلصة بيضاء',
-        nameFr: 'Sauce Blanche',
-        price: '100.00',
-      },
-      {
-        productId: prodId,
-        nameAr: 'فرماج',
-        nameFr: 'Extra Fromage',
-        price: '150.00',
-      },
-    ]);
-  }
+      const desiredAddons = [
+        { nameAr: 'صلصة بيضاء', nameFr: 'Sauce Blanche', price: '100.00' },
+        { nameAr: 'فرماج', nameFr: 'Extra Fromage', price: '150.00' },
+      ];
 
-  console.log('--- Grine Restaurant Menu Seeded Successfully! ---');
+      for (const a of desiredAddons) {
+        const existingA = tx
+          .select()
+          .from(productAddons)
+          .where(and(eq(productAddons.productId, prodId), eq(productAddons.nameAr, a.nameAr)))
+          .all();
+        if (existingA.length > 0) {
+          tx.update(productAddons)
+            .set({ nameFr: a.nameFr, price: a.price })
+            .where(eq(productAddons.id, existingA[0].id))
+            .run();
+        } else {
+          tx.insert(productAddons).values({ productId: prodId, ...a }).run();
+        }
+      }
+    }
+
+    // Soft-hide non-Grine products instead of deleting rows referenced by historical orders
+    if (syncedProductIds.length > 0) {
+      tx.update(products)
+        .set({ isAvailable: false, updatedAt: new Date().toISOString() })
+        .where(notInArray(products.id, syncedProductIds))
+        .run();
+    }
+  });
+
+  console.log('--- Grine Restaurant Menu Synced Safely (Historical Orders Preserved) ---');
 }
 
-// Auto-run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Auto-run if executed directly via CLI
+if (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv[1]?.endsWith('seedGrine.ts')) {
   seedGrineRestaurantMenu()
     .then(() => {
       console.log('Seeding script finished.');

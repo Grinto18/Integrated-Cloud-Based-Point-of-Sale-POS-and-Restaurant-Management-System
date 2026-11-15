@@ -14,6 +14,18 @@ export default defineConfig(() => {
     build: {
       target: 'chrome109',
       cssTarget: 'chrome109',
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: 'vendor-react', test: /node_modules\/(react|react-dom|scheduler)/ },
+              { name: 'vendor-firebase', test: /node_modules\/(@?firebase)/ },
+              { name: 'vendor-icons', test: /node_modules\/lucide-react/ },
+              { name: 'vendor-motion', test: /node_modules\/motion/ },
+            ],
+          },
+        },
+      },
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

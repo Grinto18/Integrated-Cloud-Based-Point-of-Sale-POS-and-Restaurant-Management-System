@@ -1,0 +1,135 @@
+name: Build Windows x64 Desktop Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows-x64:
+    name: Windows x64 Electron 22 Release Build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS (x64)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          architecture: 'x64'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Run automated QA & acceptance tests
+        run: npm test -- --no-color
+
+      - name: TypeScript type check
+        run: npm run lint
+
+      - name: Build Vite frontend and Electron CJS server
+        run: npm run build:desktop
+
+      - name: Rebuild native better-sqlite3 for Electron 22.3.27 (x64 ABI 110)
+        run: npx electron-rebuild -f -w better-sqlite3 -v 22.3.27 --arch x64
+
+      - name: Verify rebuilt native better_sqlite3.node (win32 x64)
+        shell: pwsh
+        run: |
+          $native = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+          if (-not (Test-Path $native)) {
+            throw "Native binary missing after electron-rebuild: $native"
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($native)
+          $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw ("Expected PE x64 (0x8664) native addon, got 0x{0:X4}" -f $machine)
+          }
+          Write-Host ("Verified PE32+ x64 better_sqlite3.node ({0} bytes)" -f $bytes.Length)
+
+      - name: Package Windows x64 NSIS Installer (no auto-publish)
+        run: npx electron-builder --win --x64 --publish never -c.npmRebuild=false
+
+      - name: Verify installer output, unpacked native addon & SHA-256 checksum
+        shell: pwsh
+        run: |
+          $installer = "release\GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe"
+          $unpackedExe = "release\win-unpacked\GOLDEN PALACE POS.exe"
+          $unpackedNative = "release\win-unpacked\resources\app.asar.unpacked\node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+
+          if (-not (Test-Path $installer)) {
+            throw "Expected installer not found at $installer"
+          }
+          if (-not (Test-Path $unpackedExe)) {
+            throw "Expected unpacked app executable not found at $unpackedExe"
+          }
+          if (-not (Test-Path $unpackedNative)) {
+            throw "Unpacked native better_sqlite3.node missing at $unpackedNative"
+          }
+
+          $exeBytes = [System.IO.File]::ReadAllBytes($unpackedExe)
+          $peOffset = [System.BitConverter]::ToInt32($exeBytes, 0x3C)
+          $machine = [System.BitConverter]::ToUInt16($exeBytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw ("Expected PE x64 (0x8664) installer target, got 0x{0:X4}" -f $machine)
+          }
+
+          $file = Get-Item $installer
+          if ($file.Length -lt 10000000) {
+            throw "Installer size unexpectedly small: $($file.Length) bytes"
+          }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          "$hash  GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe" | Out-File -Encoding ascii "release\GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe.sha256"
+
+          $summaryLines = @(
+            '## Windows x64 Release Build Succeeded',
+            '- Installer: GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe',
+            "- Size: $($file.Length) bytes",
+            '- Architecture: Windows x64 (PE32+ 0x8664) / Electron 22.3.27 (ABI 110)',
+            "- SHA-256: $hash"
+          )
+          $summaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "Verified $installer ($($file.Length) bytes) SHA256=$hash"
+
+      - name: Upload Windows Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLDEN-PALACE-POS-Setup-1.0.0-x64
+          path: |
+            release/GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe
+            release/GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe.sha256
+          if-no-files-found: error
+
+      - name: Report build failure diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release/failure-logs" | Out-Null
+          if (Test-Path "release/builder-debug.yml") {
+            Copy-Item "release/builder-debug.yml" "release/failure-logs/" -Force
+          }
+          $npmLogs = Join-Path $env:LOCALAPPDATA "npm-cache/_logs"
+          if (Test-Path $npmLogs) {
+            Get-ChildItem $npmLogs -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 5 | Copy-Item -Destination "release/failure-logs/" -Force
+          }
+          $failLines = @(
+            '## Windows x64 Release Build Failed',
+            "- Runner: windows-latest ($env:RUNNER_ARCH)",
+            "- Node: $(node -v)",
+            "- npm: $(npm -v)",
+            '- Inspect attached windows-build-failure-logs artifact and workflow step logs.'
+          )
+          $failLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload failure diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-failure-logs
+          path: release/failure-logs/**/*
+          if-no-files-found: ignore

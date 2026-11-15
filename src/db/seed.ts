@@ -14,6 +14,45 @@ import {
   customers,
 } from './schema.ts';
 
+export async function seedCatalogAndTablesOnly() {
+  const settingsData = [
+    { key: 'restaurant_name', value: 'القصر الذهبي - GOLDEN PALACE' },
+    { key: 'restaurant_brand', value: 'LE PALAIS D’OR • عند الجيجلي • حسين داي' },
+    { key: 'restaurant_address', value: 'شارع بلهوشات، حسين داي، الجزائر، بجانب فندق Oasis' },
+    { key: 'restaurant_phone', value: '0791755614' },
+    { key: 'currency', value: 'DZD' },
+    { key: 'receipt_size', value: '80mm' },
+    { key: 'tax_rate', value: '0' },
+    { key: 'default_language', value: 'ar' },
+    { key: 'kds_refresh_interval', value: '5000' },
+    { key: 'theme', value: 'gold-dark' },
+  ];
+
+  for (const s of settingsData) {
+    await db.insert(restaurantSettings).values(s).onConflictDoNothing();
+  }
+
+  await ensureThirtyTables();
+
+  const existingCats = await db.select().from(categories).limit(1);
+  if (existingCats.length > 0) return;
+
+  const initialCategories = [
+    { nameAr: 'المقبلات والشوربات', nameFr: 'Entrées & Soupes', nameEn: 'Appetizers & Soups', icon: 'Soup', color: 'red', sortOrder: 1, station: 'MAIN_KITCHEN' },
+    { nameAr: 'الأطباق الرئيسية', nameFr: 'Plats Principaux', nameEn: 'Main Dishes', icon: 'UtensilsCrossed', color: 'amber', sortOrder: 2, station: 'MAIN_KITCHEN' },
+    { nameAr: 'المشاوي على الجمر', nameFr: 'Grillades', nameEn: 'Charcoal Grill', icon: 'Flame', color: 'orange', sortOrder: 3, station: 'GRILL' },
+    { nameAr: 'مأكولات بحرية وأسماك', nameFr: 'Poissons & Fruits de mer', nameEn: 'Seafood', icon: 'Fish', color: 'blue', sortOrder: 4, station: 'MAIN_KITCHEN' },
+    { nameAr: 'طاكوس وسندويتشات', nameFr: 'Tacos & Sandwiches', nameEn: 'Tacos & Wraps', icon: 'Sandwich', color: 'yellow', sortOrder: 5, station: 'MAIN_KITCHEN' },
+    { nameAr: 'سلطات طازجة', nameFr: 'Salades Fraîches', nameEn: 'Salads', icon: 'Salad', color: 'emerald', sortOrder: 6, station: 'MAIN_KITCHEN' },
+    { nameAr: 'التحلية والحلويات', nameFr: 'Desserts & Douceurs', nameEn: 'Desserts', icon: 'Cake', color: 'pink', sortOrder: 7, station: 'DESSERT' },
+    { nameAr: 'المشروبات والعصائر', nameFr: 'Boissons & Jus', nameEn: 'Drinks & Juices', icon: 'GlassWater', color: 'cyan', sortOrder: 8, station: 'DRINKS' },
+  ];
+
+  for (const cat of initialCategories) {
+    await db.insert(categories).values(cat).onConflictDoNothing();
+  }
+}
+
 export async function seedDatabase() {
   console.log('--- Starting Golden Palace POS Database Seeding ---');
 
@@ -53,7 +92,7 @@ export async function seedDatabase() {
       username: 'admin',
       email: 'admin@goldenpalace.dz',
       passwordHash: adminPass,
-      pin: '1234',
+      pin: bcrypt.hashSync('1234', salt),
       fullName: 'المدير العام (Admin)',
       role: 'ADMIN',
       phone: '0791755614',
@@ -63,7 +102,7 @@ export async function seedDatabase() {
       username: 'manager',
       email: 'manager@goldenpalace.dz',
       passwordHash: managerPass,
-      pin: '2222',
+      pin: bcrypt.hashSync('2222', salt),
       fullName: 'نبيل مسؤول المطعم (Manager)',
       phone: '0773861939',
       role: 'MANAGER',
@@ -73,7 +112,7 @@ export async function seedDatabase() {
       username: 'caissier1',
       email: 'caisse1@goldenpalace.dz',
       passwordHash: cashierPass,
-      pin: '1111',
+      pin: bcrypt.hashSync('1111', salt),
       fullName: 'كاشير الوردية 1 (Cashier)',
       phone: '0550123456',
       role: 'CASHIER',
@@ -83,7 +122,7 @@ export async function seedDatabase() {
       username: 'serveur1',
       email: 'serveur1@goldenpalace.dz',
       passwordHash: waiterPass,
-      pin: '4444',
+      pin: bcrypt.hashSync('4444', salt),
       fullName: 'أمين (نادل صالة)',
       phone: '0660123456',
       role: 'WAITER',
@@ -93,7 +132,7 @@ export async function seedDatabase() {
       username: 'cuisine',
       email: 'cuisine@goldenpalace.dz',
       passwordHash: kitchenPass,
-      pin: '3333',
+      pin: bcrypt.hashSync('3333', salt),
       fullName: 'الشيف مراد (المطبخ)',
       phone: '0770123456',
       role: 'KITCHEN',
@@ -103,7 +142,7 @@ export async function seedDatabase() {
       username: 'stock',
       email: 'stock@goldenpalace.dz',
       passwordHash: inventoryPass,
-      pin: '5555',
+      pin: bcrypt.hashSync('5555', salt),
       fullName: 'مسؤول المخزن والجرد',
       phone: '0555667788',
       role: 'INVENTORY',
@@ -114,23 +153,24 @@ export async function seedDatabase() {
     await db.insert(users).values(u).onConflictDoNothing();
   }
 
-  // 3. Tables
-  const zones = [
-    { prefix: 'T', count: 14, zone: 'الصالة الرئيسية', cap: 4 },
-    { prefix: 'TR', count: 6, zone: 'الشرفة الخارجية', cap: 4 },
-    { prefix: 'VIP', count: 3, zone: 'صالون VIP والعائلات', cap: 8 },
-  ];
-
-  for (const z of zones) {
-    for (let i = 1; i <= z.count; i++) {
-      const tableNumber = `${z.prefix}${i < 10 ? '0' : ''}${i}`;
-      await db.insert(restaurantTables).values({
-        tableNumber,
-        zone: z.zone,
-        capacity: z.cap,
-        status: 'AVAILABLE',
-      }).onConflictDoNothing();
+  // 3. Tables (Exactly 30 tables numbered 1 to 30)
+  for (let i = 1; i <= 30; i++) {
+    const tableNumber = String(i);
+    let zone = 'الصالة الرئيسية';
+    let cap = 4;
+    if (i >= 17 && i <= 24) {
+      zone = 'الشرفة الخارجية';
+      cap = 4;
+    } else if (i >= 25 && i <= 30) {
+      zone = 'صالون VIP والعائلات';
+      cap = 8;
     }
+    await db.insert(restaurantTables).values({
+      tableNumber,
+      zone,
+      capacity: cap,
+      status: 'AVAILABLE',
+    }).onConflictDoNothing();
   }
 
   // 4. Categories
@@ -294,3 +334,25 @@ export async function seedDatabase() {
 
   console.log('--- Golden Palace POS Database Seeding Completed Successfully! ---');
 }
+
+export async function ensureThirtyTables() {
+  for (let i = 1; i <= 30; i++) {
+    const tableNumber = String(i);
+    let zone = 'الصالة الرئيسية';
+    let cap = 4;
+    if (i >= 17 && i <= 24) {
+      zone = 'الشرفة الخارجية';
+      cap = 4;
+    } else if (i >= 25 && i <= 30) {
+      zone = 'صالون VIP والعائلات';
+      cap = 8;
+    }
+    await db.insert(restaurantTables).values({
+      tableNumber,
+      zone,
+      capacity: cap,
+      status: 'AVAILABLE',
+    }).onConflictDoNothing();
+  }
+}
+

@@ -1,0 +1,35 @@
+appId: com.goldenpalace.pos
+productName: GOLDEN PALACE POS
+copyright: Copyright © GOLDEN PALACE POS
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - electron/**/*
+  - package.json
+npmRebuild: true
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+  - node_modules/bcryptjs/**/*
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: GOLDEN-PALACE-POS-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: GOLDEN PALACE POS
+  uninstallDisplayName: GOLDEN PALACE POS
+  deleteAppDataOnUninstall: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico

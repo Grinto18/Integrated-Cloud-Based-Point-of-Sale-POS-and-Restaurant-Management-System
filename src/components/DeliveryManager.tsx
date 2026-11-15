@@ -1,38 +1,50 @@
 import React, { useState, useEffect } from 'react';
 import { DeliveryOrder } from '../types.ts';
 import { api } from '../services/api.ts';
+import { useLanguage } from '../context/LanguageContext.tsx';
 import {
   Truck,
   Phone,
   MapPin,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
   X,
   User,
   RefreshCw,
+  AlertCircle,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const DeliveryManager: React.FC = () => {
+  const { t } = useLanguage();
   const [deliveries, setDeliveries] = useState<DeliveryOrder[]>([]);
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   const [editingDelivery, setEditingDelivery] = useState<DeliveryOrder | null>(null);
   const [driverNameInput, setDriverNameInput] = useState<string>('');
   const [driverPhoneInput, setDriverPhoneInput] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('OUT_FOR_DELIVERY');
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
 
   useEffect(() => {
     loadDeliveries();
   }, []);
 
+  const showToast = (type: 'success' | 'error', text: string) => {
+    setFeedback({ type, text });
+    setTimeout(() => setFeedback((c) => (c?.text === text ? null : c)), 4000);
+  };
+
   const loadDeliveries = async () => {
     setIsLoading(true);
+    setErrorMsg(null);
     try {
       const data = await api.getDeliveries();
-      setDeliveries(data);
-    } catch (err) {
-      console.error('Failed to load deliveries:', err);
+      setDeliveries(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setErrorMsg(err?.message || t('فشل تحميل طلبات التوصيل', 'Échec du chargement des livraisons'));
     } finally {
       setIsLoading(false);
     }
@@ -40,6 +52,8 @@ export const DeliveryManager: React.FC = () => {
 
   const handleUpdateStatus = async () => {
     if (!editingDelivery) return;
+    setModalError(null);
+    setIsSaving(true);
     try {
       await api.updateDeliveryStatus(editingDelivery.id, {
         status: selectedStatus,
@@ -48,8 +62,11 @@ export const DeliveryManager: React.FC = () => {
       });
       setEditingDelivery(null);
       await loadDeliveries();
+      showToast('success', t('تم تحديث حالة التوصيل بنجاح', 'Statut de livraison mis à jour'));
     } catch (err: any) {
-      alert(err.message || 'فشل تحديث حالة التوصيل');
+      setModalError(err?.message || t('فشل تحديث حالة التوصيل', 'Échec de mise à jour'));
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -58,43 +75,65 @@ export const DeliveryManager: React.FC = () => {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'DELIVERED':
-        return 'bg-emerald-100 text-emerald-800 border-emerald-300';
+        return 'bg-emerald-950/60 text-emerald-300 border-emerald-600/50';
       case 'OUT_FOR_DELIVERY':
-        return 'bg-blue-100 text-blue-800 border-blue-300';
+        return 'bg-[#C6A15B]/20 text-[#C6A15B] border-[#C6A15B]/50';
       case 'PREPARING':
-        return 'bg-slate-200 text-slate-800 border-slate-300';
+        return 'bg-amber-950/60 text-amber-300 border-amber-600/50';
       case 'CANCELLED':
-        return 'bg-red-100 text-red-800 border-red-300';
+        return 'bg-rose-950/60 text-rose-300 border-rose-600/50';
       default:
-        return 'bg-blue-50 text-blue-700 border-blue-200';
+        return 'bg-sky-950/60 text-sky-300 border-sky-600/50';
+    }
+  };
+
+  const statusLabel = (status: string) => {
+    switch (status) {
+      case 'NEW':
+        return t('جديد', 'Nouveau');
+      case 'CONFIRMED':
+        return t('مؤكد', 'Confirmé');
+      case 'PREPARING':
+        return t('قيد التحضير', 'En préparation');
+      case 'OUT_FOR_DELIVERY':
+        return t('مع السائق', 'En livraison');
+      case 'DELIVERED':
+        return t('تم التسليم', 'Livré');
+      case 'CANCELLED':
+        return t('ملغى', 'Annulé');
+      default:
+        return status;
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-84px)] overflow-hidden bg-slate-50 p-5 select-none text-slate-900">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto no-scrollbar bg-[#171717] p-2.5 sm:p-5 select-none text-[#F7F3EA] space-y-3 sm:space-y-4">
       {/* Top Header */}
-      <div className="flex items-center justify-between gap-4 bg-white p-4 rounded-3xl border-2 border-slate-200 shadow-sm shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="font-black text-xl text-black flex items-center gap-2 pl-3 border-l-2 border-slate-200">
-            <Truck className="w-6 h-6 text-blue-600" />
-            <span>إدارة ومتابعة طلبات التوصيل (Livraison)</span>
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-[#222222] p-3 sm:p-4 rounded-2xl border border-[#33302B] shadow-lg shrink-0">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 flex-1">
+          <div className="font-black text-base sm:text-xl text-[#F7F3EA] flex items-center gap-2 sm:pe-3 sm:border-e sm:border-[#33302B]">
+            <div className="w-9 h-9 rounded-xl bg-[#171717] border border-[#C6A15B]/40 flex items-center justify-center text-[#C6A15B] shrink-0">
+              <Truck className="w-5 h-5" />
+            </div>
+            <span className="whitespace-nowrap">{t('إدارة طلبات التوصيل', 'Gestion des Livraisons')}</span>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
             {[
-              { id: 'ALL', label: 'الكل' },
-              { id: 'NEW', label: 'جديدة' },
-              { id: 'PREPARING', label: 'قيد التحضير' },
-              { id: 'OUT_FOR_DELIVERY', label: 'مع السائق' },
-              { id: 'DELIVERED', label: 'تم التسليم' },
+              { id: 'ALL', label: t('الكل', 'Tout') },
+              { id: 'NEW', label: t('جديدة', 'Nouvelles') },
+              { id: 'PREPARING', label: t('قيد التحضير', 'En cuisine') },
+              { id: 'OUT_FOR_DELIVERY', label: t('مع السائق', 'En cours') },
+              { id: 'DELIVERED', label: t('تم التسليم', 'Livrées') },
             ].map((f) => (
               <button
                 key={f.id}
+                type="button"
                 onClick={() => setActiveFilter(f.id)}
-                className={`px-4 py-2.5 rounded-xl text-sm font-black transition active:scale-95 cursor-pointer ${
+                className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs font-black transition cursor-pointer whitespace-nowrap shrink-0 border ${
                   activeFilter === f.id
-                    ? 'bg-blue-600 text-white shadow-md'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300'
+                    ? 'bg-[#C6A15B] text-[#171717] border-[#C6A15B]'
+                    : 'bg-[#171717] text-[#A8A29E] border-[#33302B] hover:border-[#C6A15B]/60'
                 }`}
               >
                 {f.label}
@@ -104,83 +143,107 @@ export const DeliveryManager: React.FC = () => {
         </div>
 
         <button
+          type="button"
           onClick={loadDeliveries}
-          className="p-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 cursor-pointer"
-          title="تحديث"
+          className="p-2.5 rounded-xl bg-[#171717] hover:border-[#C6A15B] border border-[#33302B] text-[#A8A29E] cursor-pointer shrink-0 self-end lg:self-auto"
+          title={t('تحديث', 'Actualiser')}
         >
-          <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
+          <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-[#C6A15B]' : ''}`} />
         </button>
       </div>
 
+      {(feedback || errorMsg) && (
+        <div
+          className={`px-4 py-2.5 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-between gap-2 shrink-0 ${
+            errorMsg || feedback?.type === 'error'
+              ? 'bg-rose-950/60 border-rose-600/60 text-rose-200'
+              : 'bg-emerald-950/60 border-emerald-600/60 text-emerald-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {errorMsg || feedback?.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-400" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            )}
+            <span>{errorMsg || feedback?.text}</span>
+          </div>
+          <button type="button" onClick={() => { setErrorMsg(null); setFeedback(null); }} className="cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Deliveries Grid */}
-      <div className="flex-1 overflow-y-auto no-scrollbar pt-4">
-        {filtered.length === 0 ? (
-          <div className="h-64 flex flex-col items-center justify-center text-slate-400">
-            <Truck className="w-16 h-16 stroke-[1.5] mb-2 text-slate-300" />
-            <p className="text-lg font-black text-slate-600">لا توجد طلبات توصيل مطابقة</p>
+      <div className="flex-1 overflow-y-auto no-scrollbar">
+        {isLoading ? (
+          <div className="h-64 flex flex-col items-center justify-center gap-3">
+            <div className="w-10 h-10 border-4 border-[#C6A15B] border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs text-[#A8A29E] font-bold">{t('جاري التحميل...', 'Chargement...')}</span>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="h-64 flex flex-col items-center justify-center text-[#A8A29E] bg-[#222222] rounded-2xl border border-[#33302B]">
+            <Truck className="w-12 h-12 mb-2 text-[#33302B]" />
+            <p className="text-base font-black text-[#F7F3EA]">{t('لا توجد طلبات توصيل مطابقة', 'Aucune livraison trouvée')}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-6">
             {filtered.map((d) => (
               <div
                 key={d.id}
-                className="bg-white border-2 border-slate-200 rounded-3xl p-5 flex flex-col justify-between space-y-4 shadow-sm hover:shadow-md transition"
+                className="bg-[#222222] border border-[#33302B] rounded-2xl p-4 sm:p-5 flex flex-col justify-between space-y-4 shadow-lg hover:border-[#C6A15B]/50 transition"
               >
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div>
-                    <span className="font-black text-xl text-black block">
-                      {d.orderNumber}
-                    </span>
-                    <span className="text-sm font-black text-blue-700">
-                      {d.customerName || 'زبون عام'}
+                    <span className="font-mono font-black text-lg text-[#F7F3EA] block">{d.orderNumber}</span>
+                    <span className="text-sm font-black text-[#C6A15B]">
+                      {d.customerName || t('زبون عام', 'Client de passage')}
                     </span>
                   </div>
 
-                  <span className={`px-3 py-1 rounded-xl text-xs font-black border ${getStatusColor(d.status)}`}>
-                    {d.status === 'DELIVERED'
-                      ? 'تم التسليم'
-                      : d.status === 'OUT_FOR_DELIVERY'
-                      ? 'مع السائق'
-                      : d.status === 'PREPARING'
-                      ? 'قيد التحضير'
-                      : d.status}
+                  <span className={`px-2.5 py-1 rounded-xl text-xs font-black border ${getStatusColor(d.status)}`}>
+                    {statusLabel(d.status)}
                   </span>
                 </div>
 
-                <div className="space-y-1.5 text-sm font-bold text-slate-700">
-                  <div className="flex items-center gap-2 text-blue-700 font-mono">
-                    <Phone className="w-4 h-4" />
+                <div className="space-y-2 text-xs sm:text-sm font-bold text-[#A8A29E]">
+                  <div className="flex items-center gap-2 text-[#F7F3EA] font-mono">
+                    <Phone className="w-4 h-4 text-[#C6A15B]" />
                     <span>{d.customerPhone || '—'}</span>
                   </div>
 
-                  <div className="flex items-start gap-2 text-slate-800">
-                    <MapPin className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <div className="flex items-start gap-2 text-[#F7F3EA]/90">
+                    <MapPin className="w-4 h-4 text-[#C6A15B] shrink-0 mt-0.5" />
                     <span className="line-clamp-2">{d.deliveryAddress}</span>
                   </div>
 
                   {d.driverName && (
-                    <div className="flex items-center gap-2 text-slate-600 pt-1">
-                      <User className="w-4 h-4 text-slate-400" />
-                      <span>السائق: {d.driverName} ({d.driverPhone || '—'})</span>
+                    <div className="flex items-center gap-2 text-[#A8A29E] pt-1">
+                      <User className="w-4 h-4 text-[#C6A15B]/70" />
+                      <span>
+                        {t('السائق:', 'Livreur :')} {d.driverName} ({d.driverPhone || '—'})
+                      </span>
                     </div>
                   )}
                 </div>
 
-                <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-                  <div className="font-black text-blue-700 text-2xl">
-                    {Number(d.orderTotal || 0).toLocaleString()} <span className="text-sm text-slate-600">DA</span>
+                <div className="flex items-center justify-between pt-3 border-t border-[#33302B]">
+                  <div className="font-mono tabular-nums font-black text-[#C6A15B] text-xl">
+                    {Number(d.orderTotal || 0).toLocaleString()} <span className="text-xs text-[#A8A29E]">DA</span>
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => {
+                      setModalError(null);
                       setEditingDelivery(d);
                       setDriverNameInput(d.driverName || '');
                       setDriverPhoneInput(d.driverPhone || '');
                       setSelectedStatus(d.status);
                     }}
-                    className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black transition active:scale-95 shadow cursor-pointer"
+                    className="px-3.5 py-2 bg-[#C6A15B] hover:bg-[#D4B475] text-[#171717] rounded-xl text-xs font-black transition cursor-pointer"
                   >
-                    تحديث الحالة / السائق
+                    {t('تحديث الحالة / السائق', 'Mettre à jour')}
                   </button>
                 </div>
               </div>
@@ -191,61 +254,71 @@ export const DeliveryManager: React.FC = () => {
 
       {/* Edit Status Modal */}
       {editingDelivery && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border-2 border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 text-slate-900">
-            <div className="flex items-center justify-between border-b-2 border-slate-200 pb-3">
-              <h3 className="font-black text-xl text-black">
-                تحديث التوصيل: {editingDelivery.orderNumber}
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#222222] border border-[#C6A15B]/40 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 text-[#F7F3EA]">
+            <div className="flex items-center justify-between border-b border-[#33302B] pb-3">
+              <h3 className="font-black text-lg text-[#C6A15B]">
+                {t('تحديث التوصيل:', 'Mettre à jour :')} {editingDelivery.orderNumber}
               </h3>
-              <button onClick={() => setEditingDelivery(null)} className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600">
-                <X className="w-6 h-6" />
+              <button
+                type="button"
+                onClick={() => setEditingDelivery(null)}
+                className="p-2 rounded-xl bg-[#171717] border border-[#33302B] text-[#A8A29E] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
               </button>
             </div>
 
+            {modalError && (
+              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-600/60 text-rose-200 text-xs font-bold">
+                {modalError}
+              </div>
+            )}
+
             <div className="space-y-3 text-sm font-bold">
               <div>
-                <label className="block text-slate-700 mb-1">حالة التوصيل:</label>
+                <label className="block text-[#A8A29E] text-xs mb-1">{t('حالة التوصيل:', 'Statut livraison :')}</label>
                 <select
                   value={selectedStatus}
                   onChange={(e) => setSelectedStatus(e.target.value)}
-                  className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl p-3 text-slate-900 font-black text-base focus:outline-none focus:border-blue-600"
+                  className="w-full bg-[#171717] border border-[#33302B] rounded-xl p-2.5 text-[#F7F3EA] font-black focus:outline-none focus:border-[#C6A15B]"
                 >
-                  <option value="NEW">جديد (New)</option>
-                  <option value="PREPARING">قيد التحضير في المطبخ</option>
-                  <option value="OUT_FOR_DELIVERY">خرج للتوصيل مع السائق</option>
-                  <option value="DELIVERED">تم التسليم بنجاح (Livré)</option>
-                  <option value="CANCELLED">ملغى (Annulé)</option>
+                  <option value="NEW">{t('جديد (NEW)', 'Nouveau (NEW)')}</option>
+                  <option value="PREPARING">{t('قيد التحضير في المطبخ', 'En préparation')}</option>
+                  <option value="OUT_FOR_DELIVERY">{t('خرج للتوصيل مع السائق', 'En cours de livraison')}</option>
+                  <option value="DELIVERED">{t('تم التسليم بنجاح', 'Livré')}</option>
+                  <option value="CANCELLED">{t('ملغى', 'Annulé')}</option>
                 </select>
               </div>
 
               <div>
-                <label className="block text-slate-700 mb-1">اسم السائق (Livreur):</label>
+                <label className="block text-[#A8A29E] text-xs mb-1">{t('اسم السائق:', 'Nom du livreur :')}</label>
                 <input
                   type="text"
                   value={driverNameInput}
                   onChange={(e) => setDriverNameInput(e.target.value)}
-                  placeholder="مثال: يوسف"
-                  className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl p-3 text-slate-900 font-bold text-base focus:outline-none focus:border-blue-600"
+                  className="w-full bg-[#171717] border border-[#33302B] rounded-xl p-2.5 text-[#F7F3EA] focus:outline-none focus:border-[#C6A15B]"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-700 mb-1">رقم هاتف السائق:</label>
+                <label className="block text-[#A8A29E] text-xs mb-1">{t('رقم هاتف السائق:', 'Téléphone du livreur :')}</label>
                 <input
                   type="tel"
                   value={driverPhoneInput}
                   onChange={(e) => setDriverPhoneInput(e.target.value)}
-                  placeholder="0661223344"
-                  className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl p-3 text-slate-900 font-mono text-base focus:outline-none focus:border-blue-600"
+                  className="w-full bg-[#171717] border border-[#33302B] rounded-xl p-2.5 text-[#F7F3EA] font-mono focus:outline-none focus:border-[#C6A15B]"
                 />
               </div>
             </div>
 
             <button
+              type="button"
+              disabled={isSaving}
               onClick={handleUpdateStatus}
-              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black text-xl rounded-2xl active:scale-95 transition shadow-xl cursor-pointer"
+              className="w-full py-3.5 bg-[#C6A15B] hover:bg-[#D4B475] disabled:opacity-50 text-[#171717] font-black text-base rounded-2xl transition shadow-xl cursor-pointer"
             >
-              حفظ وتحديث
+              {isSaving ? t('جاري التحديث...', 'Mise à jour...') : t('حفظ وتحديث', 'Enregistrer')}
             </button>
           </div>
         </div>

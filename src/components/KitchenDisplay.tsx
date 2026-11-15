@@ -1,20 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api.ts';
+import { useLanguage } from '../context/LanguageContext.tsx';
+import { usePos } from '../context/PosContext.tsx';
 import {
   ChefHat,
   Flame,
   GlassWater,
   Cake,
   Clock,
-  CheckCircle2,
   RefreshCw,
-  Bell,
-  Utensils,
-  MapPin,
-  CheckCheck,
 } from 'lucide-react';
 
 export const KitchenDisplay: React.FC = () => {
+  const { t, lang } = useLanguage();
+  const { refreshDashboard } = usePos();
   const [tickets, setTickets] = useState<any[]>([]);
   const [activeStation, setActiveStation] = useState<string>('ALL');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -31,7 +30,7 @@ export const KitchenDisplay: React.FC = () => {
   const loadTickets = async () => {
     try {
       const data = await api.getKitchenTickets(activeStation);
-      setTickets(data);
+      setTickets(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to load kitchen tickets:', err);
     } finally {
@@ -43,6 +42,7 @@ export const KitchenDisplay: React.FC = () => {
     try {
       await api.updateKitchenItemStatus(itemId, nextStatus);
       await loadTickets();
+      await refreshDashboard();
     } catch (err) {
       console.error('Failed to update kitchen item:', err);
     }
@@ -54,76 +54,78 @@ export const KitchenDisplay: React.FC = () => {
   };
 
   const stations = [
-    { id: 'ALL', label: 'الكل (Toutes Stations)', icon: ChefHat },
-    { id: 'MAIN_KITCHEN', label: 'المطبخ الرئيسي', icon: ChefHat },
-    { id: 'GRILL', label: 'مشاوي وفحم (Grill)', icon: Flame },
-    { id: 'DESSERT', label: 'تحلية وحلويات', icon: Cake },
-    { id: 'DRINKS', label: 'مشروبات وعصائر', icon: GlassWater },
+    { id: 'ALL', ar: 'الكل', fr: 'Toutes Stations', icon: ChefHat },
+    { id: 'MAIN_KITCHEN', ar: 'المطبخ الرئيسي', fr: 'Cuisine Principale', icon: ChefHat },
+    { id: 'GRILL', ar: 'مشاوي وفحم', fr: 'Grill', icon: Flame },
+    { id: 'DESSERT', ar: 'تحلية وحلويات', fr: 'Desserts', icon: Cake },
+    { id: 'DRINKS', ar: 'مشروبات وعصائر', fr: 'Boissons', icon: GlassWater },
   ];
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-84px)] overflow-hidden bg-slate-50 p-5 select-none text-slate-900">
-      {/* Top Controls: Stations & Refresh */}
-      <div className="flex items-center justify-between gap-4 bg-white p-4 rounded-3xl border-2 border-slate-200 shadow-sm shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="font-black text-xl text-black flex items-center gap-2 pl-3 border-l-2 border-slate-200">
-            <ChefHat className="w-6 h-6 text-blue-600" />
-            <span>شاشة المطبخ (KDS)</span>
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#171717] p-2.5 sm:p-4 select-none text-[#F7F3EA] space-y-3">
+      {/* Top Controls */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-[#222222] p-3 sm:p-4 rounded-2xl border border-[#33302B] shadow shrink-0">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+          <div className="font-black text-base sm:text-xl text-[#C6A15B] flex items-center gap-2 shrink-0">
+            <ChefHat className="w-6 h-6 shrink-0" />
+            <span className="whitespace-nowrap">{t('شاشة المطبخ (KDS)', 'Écran Cuisine (KDS)')}</span>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
             {stations.map((s) => {
               const Icon = s.icon;
               const isSelected = activeStation === s.id;
               return (
                 <button
                   key={s.id}
+                  type="button"
                   onClick={() => setActiveStation(s.id)}
-                  className={`px-4 py-2.5 rounded-xl text-sm font-black flex items-center gap-2 transition active:scale-95 cursor-pointer ${
+                  className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
                     isSelected
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300'
+                      ? 'bg-[#C6A15B] text-[#171717] shadow'
+                      : 'bg-[#171717] hover:border-[#C6A15B]/50 text-[#A8A29E] hover:text-[#F7F3EA] border border-[#33302B]'
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
-                  <span>{s.label}</span>
+                  <Icon className="w-3.5 h-3.5" />
+                  <span>{t(s.ar, s.fr)}</span>
                 </button>
               );
             })}
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-sm text-slate-700 font-bold cursor-pointer">
+        <div className="flex items-center gap-2.5 justify-end shrink-0">
+          <label className="flex items-center gap-1.5 text-xs text-[#A8A29E] font-bold cursor-pointer">
             <input
               type="checkbox"
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="rounded bg-slate-100 border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+              className="w-4 h-4 accent-[#C6A15B] cursor-pointer"
             />
-            <span>تحديث تلقائي</span>
+            <span>{t('تحديث تلقائي', 'Auto-refresh')}</span>
           </label>
 
           <button
+            type="button"
             onClick={loadTickets}
-            className="p-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 transition active:scale-95 cursor-pointer"
-            title="تحديث"
+            className="p-2 rounded-xl bg-[#171717] hover:border-[#C6A15B] border border-[#33302B] text-[#C6A15B] cursor-pointer"
           >
-            <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
 
       {/* Tickets Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden pt-4 no-scrollbar">
+      <div className="flex-1 overflow-x-auto overflow-y-auto pt-1 no-scrollbar">
         {tickets.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-slate-400">
-            <ChefHat className="w-16 h-16 stroke-[1.5] text-slate-300 mb-3" />
-            <h3 className="text-xl font-black text-slate-700">لا توجد طلبات قيد التحضير حالياً</h3>
-            <p className="text-sm font-semibold text-slate-500 mt-1">ستظهر التذاكر الجديدة تلقائياً عند طلبها من الكاشير</p>
+          <div className="h-full flex flex-col items-center justify-center text-[#A8A29E] py-12">
+            <ChefHat className="w-14 h-14 stroke-[1.5] text-[#C6A15B]/40 mb-3" />
+            <h3 className="text-lg font-black text-[#F7F3EA]">
+              {t('لا توجد طلبات قيد التحضير حالياً', 'Aucune commande en préparation')}
+            </h3>
           </div>
         ) : (
-          <div className="flex gap-4 h-full pb-2">
+          <div className="flex gap-3 h-full pb-2">
             {tickets.map((ticket) => {
               const elapsed = getElapsedMinutes(ticket.createdAt);
               const isUrgent = elapsed > 15;
@@ -132,43 +134,42 @@ export const KitchenDisplay: React.FC = () => {
               return (
                 <div
                   key={ticket.id}
-                  className={`w-88 h-full flex flex-col rounded-3xl border-2 shadow-md bg-white shrink-0 overflow-hidden ${
+                  className={`w-72 sm:w-84 h-full flex flex-col rounded-2xl border-2 shadow-lg bg-[#222222] shrink-0 overflow-hidden ${
                     isUrgent
-                      ? 'border-red-400 ring-2 ring-red-200'
+                      ? 'border-rose-500'
                       : isWarning
-                      ? 'border-blue-400 ring-2 ring-blue-200'
-                      : 'border-slate-200'
+                      ? 'border-amber-500'
+                      : 'border-[#C6A15B]/50'
                   }`}
                 >
-                  {/* Ticket Header */}
                   <div
-                    className={`p-4 border-b-2 flex items-center justify-between text-sm font-black ${
+                    className={`p-3.5 border-b border-[#33302B] flex items-center justify-between text-sm font-black ${
                       isUrgent
-                        ? 'bg-red-50 text-red-900 border-red-200'
+                        ? 'bg-rose-950/60'
                         : isWarning
-                        ? 'bg-blue-50 text-blue-900 border-blue-200'
-                        : 'bg-slate-100 text-slate-900 border-slate-200'
+                        ? 'bg-amber-950/50'
+                        : 'bg-[#1D1D1D]'
                     }`}
                   >
                     <div>
-                      <span className="text-xl font-black text-black block">
+                      <span className="text-lg font-black text-[#F7F3EA] font-mono block">
                         {ticket.orderNumber}
                       </span>
-                      <span className="text-xs font-bold text-slate-600">
+                      <span className="text-xs font-bold text-[#A8A29E]">
                         {ticket.type === 'DINE_IN'
-                          ? `طاولة ${ticket.tableNumber || '—'}`
+                          ? t(`طاولة ${ticket.tableNumber || '—'}`, `Table ${ticket.tableNumber || '—'}`)
                           : ticket.type === 'DELIVERY'
-                          ? 'توصيل منزلي'
-                          : 'طلب محمول'}
+                          ? t('توصيل منزلي', 'Livraison')
+                          : t('طلب محمول', 'À emporter')}
                       </span>
                     </div>
 
-                    <div className="text-left font-mono">
-                      <div className="flex items-center gap-1.5 text-base font-black text-blue-700">
-                        <Clock className="w-4 h-4 text-blue-600" />
-                        <span>{elapsed} د</span>
+                    <div className="text-end font-mono">
+                      <div className="flex items-center gap-1 text-base font-black text-[#C6A15B] tabular-nums">
+                        <Clock className="w-4 h-4" />
+                        <span>{elapsed} m</span>
                       </div>
-                      <span className="text-xs text-slate-500 font-bold">
+                      <span className="text-xs text-[#A8A29E]">
                         {new Date(ticket.createdAt).toLocaleTimeString('fr-FR', {
                           hour: '2-digit',
                           minute: '2-digit',
@@ -177,8 +178,7 @@ export const KitchenDisplay: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Items List */}
-                  <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5 no-scrollbar bg-slate-50/50">
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2 no-scrollbar bg-[#171717]">
                     {ticket.items?.map((item: any) => {
                       const isReady = item.status === 'READY';
                       const isPreparing = item.status === 'PREPARING';
@@ -186,30 +186,28 @@ export const KitchenDisplay: React.FC = () => {
                       return (
                         <div
                           key={item.id}
-                          className={`p-3 rounded-2xl border-2 transition ${
+                          className={`p-3 rounded-xl border transition ${
                             isReady
-                              ? 'bg-emerald-50 border-emerald-300 text-emerald-900 opacity-80'
+                              ? 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
                               : isPreparing
-                              ? 'bg-blue-50 border-blue-400 text-blue-950 shadow-sm'
-                              : 'bg-white border-slate-200 text-slate-900 shadow-sm'
+                              ? 'bg-[#2A2620] border-[#C6A15B] text-[#F7F3EA]'
+                              : 'bg-[#222222] border-[#33302B] text-[#F7F3EA]'
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-baseline gap-2.5">
-                              <span className="font-mono font-black text-lg text-blue-700 bg-blue-100 px-2.5 py-1 rounded-xl border border-blue-200">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-baseline gap-2">
+                              <span className="font-mono font-black text-base text-[#C6A15B] bg-[#171717] px-2 py-0.5 rounded-lg border border-[#33302B]">
                                 {item.quantity}×
                               </span>
                               <div>
-                                <span className="font-black text-base text-slate-900">{item.nameAr}</span>
-                                {item.nameFr && (
-                                  <span className="text-xs text-slate-500 font-semibold block">
-                                    {item.nameFr}
-                                  </span>
-                                )}
+                                <span className="font-black text-sm">
+                                  {lang === 'fr' && item.nameFr ? item.nameFr : item.nameAr}
+                                </span>
                               </div>
                             </div>
 
                             <button
+                              type="button"
                               onClick={() => {
                                 const next =
                                   item.status === 'NEW'
@@ -219,21 +217,25 @@ export const KitchenDisplay: React.FC = () => {
                                     : 'SERVED';
                                 handleUpdateItemStatus(item.id, next);
                               }}
-                              className={`px-3 py-1.5 rounded-xl text-xs font-black transition active:scale-95 cursor-pointer ${
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-black transition cursor-pointer ${
                                 isReady
-                                  ? 'bg-emerald-600 text-white shadow-sm'
+                                  ? 'bg-emerald-600 text-white'
                                   : isPreparing
-                                  ? 'bg-blue-600 text-white shadow-md animate-pulse'
-                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300'
+                                  ? 'bg-[#C6A15B] text-[#171717]'
+                                  : 'bg-[#171717] hover:border-[#C6A15B] text-[#F7F3EA] border border-[#33302B]'
                               }`}
                             >
-                              {isReady ? 'جاهز ✓' : isPreparing ? 'قيد التحضير...' : 'بدء التحضير'}
+                              {isReady
+                                ? t('جاهز ✓', 'Prêt ✓')
+                                : isPreparing
+                                ? t('تأكيد الجاهزية', 'Marquer Prêt')
+                                : t('بدء التحضير', 'Préparer')}
                             </button>
                           </div>
 
                           {item.notes && (
-                            <div className="mt-2 text-xs text-blue-900 font-extrabold bg-blue-100/70 px-2.5 py-1 rounded-lg border border-blue-200">
-                              ملاحظة: {item.notes}
+                            <div className="mt-2 text-xs text-[#C6A15B] font-bold bg-[#171717] px-2 py-1 rounded border border-[#33302B]">
+                              {item.notes}
                             </div>
                           )}
                         </div>
@@ -241,10 +243,9 @@ export const KitchenDisplay: React.FC = () => {
                     })}
                   </div>
 
-                  {/* Notes & Actions */}
                   {ticket.notes && (
-                    <div className="px-4 py-2.5 bg-slate-100 border-t-2 border-slate-200 text-xs font-bold text-slate-700">
-                      ملاحظة عامة: {ticket.notes}
+                    <div className="px-3.5 py-2 bg-[#1D1D1D] border-t border-[#33302B] text-xs font-bold text-[#A8A29E]">
+                      {ticket.notes}
                     </div>
                   )}
                 </div>
