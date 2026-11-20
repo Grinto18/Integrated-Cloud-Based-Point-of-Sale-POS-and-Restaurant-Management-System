@@ -1,11 +1,20 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { getBackupDirectory, getLocalDatabasePath } from '../db/sqlitePath.ts';
 import { closeDatabase, reopenDatabase, sqlite as liveSqlite } from '../db/index.ts';
 import { sanitizeErrorMessage } from '../utils/redact.ts';
 
-export type BackupKind = 'MANUAL' | 'DAILY' | 'WEEKLY' | 'SHUTDOWN' | 'PRE_RESTORE' | 'SCHEDULED';
+export type BackupKind =
+  | 'MANUAL'
+  | 'DAILY'
+  | 'WEEKLY'
+  | 'SHUTDOWN'
+  | 'PRE_RESTORE'
+  | 'PRE_IMPORT'
+  | 'PRE_MIGRATION'
+  | 'SCHEDULED';
 export type BackupHealthStatus = 'VERIFIED' | 'FAILED' | 'CORRUPTED' | 'UNVERIFIED';
 
 export interface BackupRecordCounts {
@@ -29,6 +38,8 @@ export interface BackupVerificationResult {
   missingTables: string[];
   recordCounts: BackupRecordCounts;
   verifiedAt: string;
+  sha256?: string;
+  foreignKeyViolationsCount?: number;
   error?: string;
 }
 
@@ -42,6 +53,8 @@ export interface BackupManifestEntry {
   recordCounts?: BackupRecordCounts;
   verifiedAt?: string;
   durationMs?: number;
+  sha256?: string;
+  foreignKeyViolationsCount?: number;
   error?: string;
 }
 
@@ -51,6 +64,7 @@ export interface RestoreResult {
   preRestoreBackup: string;
   postRestoreVerification: BackupVerificationResult;
   restoredAt: string;
+  lockRetryAttempts?: number;
 }
 
 export interface BackupManagerOptions {
@@ -96,6 +110,8 @@ export function inferBackupTypeFromFilename(filename: string): BackupKind {
   if (lower.includes('_weekly_')) return 'WEEKLY';
   if (lower.includes('_shutdown_')) return 'SHUTDOWN';
   if (lower.includes('_pre_restore_')) return 'PRE_RESTORE';
+  if (lower.includes('_pre_import_')) return 'PRE_IMPORT';
+  if (lower.includes('_pre_migration_')) return 'PRE_MIGRATION';
   if (lower.includes('_scheduled_')) return 'SCHEDULED';
   return 'MANUAL';
 }
@@ -115,6 +131,54 @@ export function getAvailableDiskBytes(dirPath: string): number | null {
     // Ignore unsupported platform statfs errors
   }
   return null;
+}
+
+export function computeFileSha256(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let bytesRead = 0;
+    while ((bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      hash.update(chunk.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
+export const TRANSIENT_LOCK_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+export function isTransientLockError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === 'string' && TRANSIENT_LOCK_ERROR_CODES.has(code);
+}
+
+export async function runWithTransientLockRetry<T>(
+  operation: () => T,
+  options?: { maxAttempts?: number; baseDelayMs?: number }
+): Promise<{ result: T; attempts: number }> {
+  const maxAttempts = Math.max(1, Math.min(10, Number(options?.maxAttempts ?? 5)));
+  const baseDelayMs = Math.max(0, Math.min(1000, Number(options?.baseDelayMs ?? 100)));
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = operation();
+      return { result, attempts: attempt };
+    } catch (err) {
+      lastError = err;
+      if (!isTransientLockError(err) || attempt >= maxAttempts) {
+        throw err;
+      }
+      const delayMs = Math.min(500, baseDelayMs * attempt);
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
 }
 
 export class BackupManager {
@@ -252,6 +316,13 @@ export class BackupManager {
       };
     }
 
+    let fileSha256: string | undefined;
+    try {
+      fileSha256 = computeFileSha256(filePath);
+    } catch {
+      fileSha256 = undefined;
+    }
+
     let testDb: Database.Database | null = null;
     try {
       testDb = new Database(filePath, { readonly: true, fileMustExist: true });
@@ -270,6 +341,9 @@ export class BackupManager {
           ? 'ok'
           : integrityRows.map((r) => r.integrity_check).join('; ') || 'failed';
 
+      const fkViolations = testDb.pragma('foreign_key_check') as unknown[];
+      const foreignKeyViolationsCount = Array.isArray(fkViolations) ? fkViolations.length : 0;
+
       const countTable = (tbl: keyof BackupRecordCounts): number => {
         if (!presentTables.has(tbl)) return 0;
         const row = testDb!.prepare(`SELECT COUNT(*) as c FROM ${tbl}`).get() as { c: number };
@@ -286,13 +360,15 @@ export class BackupManager {
         cash_shifts: countTable('cash_shifts'),
       };
 
-      const isValid = integrityVal === 'ok' && missingTables.length === 0;
+      const isValid = integrityVal === 'ok' && missingTables.length === 0 && foreignKeyViolationsCount === 0;
       const errDetail =
         integrityVal !== 'ok'
           ? `فشل فحص سلامة SQLite: ${integrityVal}`
           : missingTables.length > 0
             ? `جداول أساسية مفقودة: ${missingTables.join(', ')}`
-            : undefined;
+            : foreignKeyViolationsCount > 0
+              ? `فشل فحص سلامة العلاقات (Foreign Keys): تم اكتشاف ${foreignKeyViolationsCount} مخالفة مرجعية`
+              : undefined;
 
       return {
         filename,
@@ -300,11 +376,13 @@ export class BackupManager {
         valid: isValid,
         status: isValid ? 'VERIFIED' : 'CORRUPTED',
         sizeBytes: stats.size,
-        integrityCheck: integrityVal,
+        integrityCheck: foreignKeyViolationsCount > 0 && integrityVal === 'ok' ? 'foreign_key_failed' : integrityVal,
         canOpen: true,
         missingTables,
         recordCounts,
         verifiedAt,
+        sha256: fileSha256,
+        foreignKeyViolationsCount,
         error: errDetail,
       };
     } catch (err: any) {
@@ -319,6 +397,7 @@ export class BackupManager {
         missingTables: [...REQUIRED_BACKUP_TABLES],
         recordCounts: emptyCounts,
         verifiedAt,
+        sha256: fileSha256,
         error: sanitizeErrorMessage(err) || 'تعذر فتح قاعدة النسخة الاحتياطية (تالف)',
       };
     } finally {
@@ -332,9 +411,23 @@ export class BackupManager {
 
   public verifyExistingBackup(filename: string): BackupVerificationResult {
     const safePath = this.resolveSafeBackupPath(filename);
-    const result = this.verifyBackupFile(safePath, filename);
+    let result = this.verifyBackupFile(safePath, filename);
     const existingEntry = this.readManifest().find((m) => m.filename === filename);
     const stats = fs.existsSync(safePath) ? fs.statSync(safePath) : null;
+
+    // Enforce SHA-256 tamper detection against recorded manifest digest (if present)
+    const sha256Mismatch = Boolean(
+      existingEntry?.sha256 && result.sha256 && existingEntry.sha256 !== result.sha256
+    );
+    if (sha256Mismatch) {
+      result = {
+        ...result,
+        valid: false,
+        status: 'CORRUPTED',
+        integrityCheck: 'sha256_mismatch',
+        error: 'فشل التحقق من بصمة SHA-256: ملف النسخة الاحتياطية تعرّض للتعديل أو التلف مقارنة بالسجل الأصلي',
+      };
+    }
 
     this.upsertManifestEntry({
       filename,
@@ -346,6 +439,9 @@ export class BackupManager {
       recordCounts: result.recordCounts,
       verifiedAt: result.verifiedAt,
       durationMs: existingEntry?.durationMs,
+      // Preserve trusted original digest if tampered so subsequent checks keep flagging mismatch
+      sha256: existingEntry?.sha256 || (result.valid ? result.sha256 : undefined),
+      foreignKeyViolationsCount: result.foreignKeyViolationsCount,
       error: result.error,
     });
 
@@ -430,6 +526,8 @@ export class BackupManager {
         recordCounts: verification.recordCounts,
         verifiedAt: verification.verifiedAt,
         durationMs: Date.now() - startedAt,
+        sha256: verification.sha256,
+        foreignKeyViolationsCount: verification.foreignKeyViolationsCount ?? 0,
       };
       this.upsertManifestEntry(entry);
 
@@ -558,6 +656,10 @@ export class BackupManager {
     filename: string,
     options?: {
       simulateSwapFailure?: () => void;
+      renameSync?: (oldPath: string, newPath: string) => void;
+      unlinkSync?: (targetPath: string) => void;
+      maxLockRetries?: number;
+      retryDelayMs?: number;
     }
   ): Promise<RestoreResult> {
     if (this.isBusy) {
@@ -568,11 +670,18 @@ export class BackupManager {
     const candidatePath = this.resolveSafeBackupPath(filename);
     const dbPath = path.resolve(this.opts.getDbPath());
     const stagingPath = `${dbPath}.restore-staging-${Date.now()}`;
+    const performRename = options?.renameSync || ((src: string, dest: string) => fs.renameSync(src, dest));
+    const performUnlink = options?.unlinkSync || ((target: string) => fs.unlinkSync(target));
+    const lockRetryOpts = {
+      maxAttempts: options?.maxLockRetries ?? 5,
+      baseDelayMs: options?.retryDelayMs ?? 100,
+    };
     let preRestoreEntry: BackupManifestEntry | null = null;
     let preRestorePath: string | null = null;
 
     try {
-      // Step 1: Strictly verify candidate backup BEFORE touching or overwriting production DB
+      // Step 1: Strictly verify candidate backup (including SHA-256 + integrity_check + FK check)
+      // BEFORE touching or overwriting live DB
       const preCheck = this.verifyExistingBackup(filename);
       if (!preCheck.valid) {
         throw new Error(preCheck.error || 'النسخة الاحتياطية المختارة تالفة أو غير مكتملة وتم منع الاستعادة');
@@ -589,7 +698,7 @@ export class BackupManager {
         throw new Error(stagingCheck.error || 'فشل التحقق من ملف التجهيز المؤقت للاستعادة');
       }
 
-      // Step 4: Atomic close -> WAL cleanup -> rename -> reopen -> post-restore verify
+      // Step 4: Atomic close -> WAL cleanup -> rename (with bounded Windows NTFS lock retry) -> reopen -> post-restore verify
       try {
         this.opts.closeDb();
 
@@ -599,11 +708,14 @@ export class BackupManager {
 
         for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
           if (fs.existsSync(sidecar)) {
-            fs.unlinkSync(sidecar);
+            await runWithTransientLockRetry(() => performUnlink(sidecar), lockRetryOpts);
           }
         }
 
-        fs.renameSync(stagingPath, dbPath);
+        const swapOutcome = await runWithTransientLockRetry(
+          () => performRename(stagingPath, dbPath),
+          lockRetryOpts
+        );
 
         const reopened = this.opts.reopenDb(dbPath);
         const postRows = reopened.pragma('integrity_check') as { integrity_check: string }[];
@@ -622,6 +734,7 @@ export class BackupManager {
           preRestoreBackup: preRestoreEntry.filename,
           postRestoreVerification: postVerification,
           restoredAt: new Date().toISOString(),
+          lockRetryAttempts: swapOutcome.attempts,
         };
       } catch (swapErr: any) {
         // Automatic Disaster Rollback to Pre-Restore Safety Backup
@@ -629,11 +742,11 @@ export class BackupManager {
           this.opts.closeDb();
           for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
             if (fs.existsSync(sidecar)) {
-              fs.unlinkSync(sidecar);
+              await runWithTransientLockRetry(() => fs.unlinkSync(sidecar), lockRetryOpts);
             }
           }
           if (preRestorePath && fs.existsSync(preRestorePath)) {
-            fs.copyFileSync(preRestorePath, dbPath);
+            await runWithTransientLockRetry(() => fs.copyFileSync(preRestorePath!, dbPath), lockRetryOpts);
           }
           this.opts.reopenDb(dbPath);
         } catch (rollbackErr: any) {

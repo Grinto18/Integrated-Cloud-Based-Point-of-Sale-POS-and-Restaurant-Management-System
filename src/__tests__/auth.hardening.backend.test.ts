@@ -596,4 +596,175 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
       }
     });
   });
+
+  describe('6. Phase 12-C — Staff Password Policy & Demo Seeding Guards', () => {
+    it('rejects short and weak passwords on POST /api/users and PUT /api/users/:id while preserving existing passwords and RBAC', async () => {
+      const adminRow = (await db.select().from(usersTable).where(eqFn(usersTable.username, 'admin')))[0];
+      const cashierRow = (await db.select().from(usersTable).where(eqFn(usersTable.username, 'caissier1')))[0];
+      const adminToken = signUserToken(adminRow);
+      const cashierToken = signUserToken(cashierRow);
+
+      // RBAC check: CASHIER still receives 403 on POST/PUT /api/users
+      const cashierAttempt = await request(app)
+        .post('/api/users')
+        .set('Authorization', `Bearer ${cashierToken}`)
+        .send({
+          username: 'unauth_staff',
+          email: 'unauth@goldenpalace.dz',
+          fullName: 'Unauth Staff',
+          password: 'StrongPassword!99',
+          role: 'WAITER',
+        });
+      expect(cashierAttempt.status).toBe(403);
+
+      // Reject weak / short passwords on creation
+      const badPasswords = ['123', '1234567', '        ', '12345678', 'admin123', 'password', 'aaaaaaaa', 'new_staff_1'];
+      for (const badPw of badPasswords) {
+        const res = await request(app)
+          .post('/api/users')
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({
+            username: 'new_staff_1',
+            email: 'newstaff1@goldenpalace.dz',
+            fullName: 'موظف جديد',
+            password: badPw,
+            role: 'CASHIER',
+          });
+        expect(res.status).toBe(400);
+      }
+
+      // Accept valid strong password on creation and allow login
+      const strongInitialPass = 'GoldenStaff#2026';
+      const createOk = await request(app)
+        .post('/api/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          username: 'policy_staff_ok',
+          email: 'policystaff@goldenpalace.dz',
+          fullName: 'موظف سياسة المرور',
+          password: strongInitialPass,
+          pin: '7349',
+          role: 'CASHIER',
+        });
+      expect(createOk.status).toBe(201);
+      expect(createOk.body.passwordHash).toBeUndefined();
+      const createdId = createOk.body.id;
+
+      const initialLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ identifier: 'policy_staff_ok', password: strongInitialPass });
+      expect(initialLogin.status).toBe(200);
+
+      // Reject weak / short password on PUT /api/users/:id and verify old password remains valid
+      for (const weakUpdate of ['short', '   ', '12345678', 'admin123', 'policy_staff_ok']) {
+        const putFail = await request(app)
+          .put(`/api/users/${createdId}`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ password: weakUpdate });
+        expect(putFail.status).toBe(400);
+      }
+
+      const oldPassStillWorks = await request(app)
+        .post('/api/auth/login')
+        .send({ identifier: 'policy_staff_ok', password: strongInitialPass });
+      expect(oldPassStillWorks.status).toBe(200);
+
+      // Updating profile with empty password string preserves existing password
+      const profileOnlyUpdate = await request(app)
+        .put(`/api/users/${createdId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ fullName: 'موظف محدث', password: '' });
+      expect(profileOnlyUpdate.status).toBe(200);
+
+      const passStillIntact = await request(app)
+        .post('/api/auth/login')
+        .send({ identifier: 'policy_staff_ok', password: strongInitialPass });
+      expect(passStillIntact.status).toBe(200);
+
+      // Valid strong password update succeeds and replaces password
+      const updatedStrongPass = 'RotatedStaff#2026';
+      const putOk = await request(app)
+        .put(`/api/users/${createdId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ password: updatedStrongPass });
+      expect(putOk.status).toBe(200);
+
+      const oldPassAfterRotate = await request(app)
+        .post('/api/auth/login')
+        .send({ identifier: 'policy_staff_ok', password: strongInitialPass });
+      expect(oldPassAfterRotate.status).toBe(401);
+
+      const newPassLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ identifier: 'policy_staff_ok', password: updatedStrongPass });
+      expect(newPassLogin.status).toBe(200);
+    });
+
+    it('blocks demo user seeding in production/desktop environments and requires explicit dev configuration', async () => {
+      const {
+        isProductionOrDesktopSeedBlocked,
+        isDemoUserSeedingAllowed,
+        seedDatabase,
+      } = await import('../db/seed.ts');
+
+      // Pure dev runtime requires explicit GOLDEN_PALACE_ALLOW_DEMO_SEED=1 (or allowDemoUsers option)
+      expect(isDemoUserSeedingAllowed({}, { NODE_ENV: 'development' })).toBe(false);
+      expect(
+        isDemoUserSeedingAllowed({}, { NODE_ENV: 'development', GOLDEN_PALACE_ALLOW_DEMO_SEED: '1' })
+      ).toBe(true);
+
+      // Production & desktop flags strictly forbid demo seeding even when allowDemoUsers/ALLOW_DEMO_SEED/VITEST are set
+      expect(
+        isProductionOrDesktopSeedBlocked({ NODE_ENV: 'production' })
+      ).toBe(true);
+      expect(
+        isDemoUserSeedingAllowed(
+          { allowDemoUsers: true },
+          { NODE_ENV: 'production', GOLDEN_PALACE_ALLOW_DEMO_SEED: '1', VITEST: 'true' }
+        )
+      ).toBe(false);
+      expect(
+        isDemoUserSeedingAllowed(
+          { allowDemoUsers: true },
+          { NODE_ENV: 'development', GOLDEN_PALACE_DESKTOP: '1', VITEST: 'true' }
+        )
+      ).toBe(false);
+      expect(
+        isDemoUserSeedingAllowed(
+          { allowDemoUsers: true },
+          { NODE_ENV: 'development', GOLDEN_PALACE_DB_MODE: 'production', VITEST: 'true' }
+        )
+      ).toBe(false);
+
+      // Runtime call to seedDatabase() under production/desktop env vars rejects without inserting any users
+      const origNodeEnv = process.env.NODE_ENV;
+      const origDesktop = process.env.GOLDEN_PALACE_DESKTOP;
+      const origDbMode = process.env.GOLDEN_PALACE_DB_MODE;
+      const beforeUsersCount = (sqlite.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        await expect(seedDatabase({ allowDemoUsers: true })).rejects.toThrow(/SECURITY_BLOCK/);
+
+        process.env.NODE_ENV = 'test';
+        process.env.GOLDEN_PALACE_DESKTOP = '1';
+        await expect(seedDatabase({ allowDemoUsers: true })).rejects.toThrow(/SECURITY_BLOCK/);
+
+        delete process.env.GOLDEN_PALACE_DESKTOP;
+        process.env.GOLDEN_PALACE_DB_MODE = 'production';
+        await expect(seedDatabase({ allowDemoUsers: true })).rejects.toThrow(/SECURITY_BLOCK/);
+      } finally {
+        if (origNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = origNodeEnv;
+        if (origDesktop === undefined) delete process.env.GOLDEN_PALACE_DESKTOP;
+        else process.env.GOLDEN_PALACE_DESKTOP = origDesktop;
+        if (origDbMode === undefined) delete process.env.GOLDEN_PALACE_DB_MODE;
+        else process.env.GOLDEN_PALACE_DB_MODE = origDbMode;
+      }
+
+      const afterUsersCount = (sqlite.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+      expect(afterUsersCount).toBe(beforeUsersCount);
+    });
+  });
 });
+

@@ -1,6 +1,7 @@
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
 const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
-const SENSITIVE_KV_PATTERN = /\b(password|passwordHash|pin|secret|token|jwt|authorization)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const SENSITIVE_KV_PATTERN =
+  /\b(password|newPassword|oldPassword|passwordHash|pin|confirmPin|secret|jwtSecret|jwt_secret|token|accessToken|access_token|refreshToken|refresh_token|apiKey|api_key|jwt|authorization)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi;
 
 export function redactSensitiveText(input: string): string {
   if (!input) return input;

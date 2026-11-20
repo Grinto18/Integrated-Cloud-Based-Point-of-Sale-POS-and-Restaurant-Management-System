@@ -9,6 +9,8 @@ export async function logAudit(params: {
   entityType?: string;
   entityId?: string;
   details?: string;
+  previousValue?: string | null;
+  newValue?: string | null;
   ipAddress?: string;
 }) {
   try {
@@ -19,6 +21,8 @@ export async function logAudit(params: {
       entityType: params.entityType,
       entityId: params.entityId,
       details: params.details ? redactSensitiveText(params.details) : params.details,
+      previousValue: params.previousValue ? redactSensitiveText(params.previousValue) : params.previousValue ?? null,
+      newValue: params.newValue ? redactSensitiveText(params.newValue) : params.newValue ?? null,
       ipAddress: params.ipAddress,
     });
   } catch (err) {

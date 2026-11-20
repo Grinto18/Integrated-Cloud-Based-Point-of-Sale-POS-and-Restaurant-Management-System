@@ -2,22 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useLanguage } from '../context/LanguageContext.tsx';
 import { api, setAuthToken } from '../services/api.ts';
-import { Lock, Globe, KeyRound, ShieldCheck } from 'lucide-react';
+import { Lock, Globe, ShieldCheck } from 'lucide-react';
 
 export const LoginModal: React.FC = () => {
   const { login, pinLogin, unlockWithPin, isLocked, user } = useAuth();
   const { lang, toggleLang, t } = useLanguage();
   const [mode, setMode] = useState<'PIN' | 'PASSWORD' | 'SETUP_ADMIN'>('PIN');
   const [pin, setPin] = useState<string>('');
-  const [identifier, setIdentifier] = useState<string>('admin');
-  const [password, setPassword] = useState<string>('admin123');
+  const [identifier, setIdentifier] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isDesktopMode, setIsDesktopMode] = useState<boolean>(false);
 
-  // First-Run Initial Admin Setup (when desktop database has zero users)
+  // First-Run Initial Admin Setup (when database has zero users)
   const [setupFullName, setSetupFullName] = useState<string>('');
-  const [setupUsername, setSetupUsername] = useState<string>('admin');
+  const [setupUsername, setSetupUsername] = useState<string>('');
   const [setupEmail, setSetupEmail] = useState<string>('');
   const [setupPassword, setSetupPassword] = useState<string>('');
   const [setupPin, setSetupPin] = useState<string>('');
@@ -27,13 +26,11 @@ export const LoginModal: React.FC = () => {
     const isDesktopOrProdBuild = Boolean(window.goldenPalaceDesktop?.isDesktop || import.meta.env?.PROD);
     if (!isDesktopOrProdBuild) return;
     if (typeof api.getFirstRunStatus !== 'function') return;
+    let isCancelled = false;
     api
       .getFirstRunStatus()
       .then((res) => {
-        if (res?.isDesktop || (res as any)?.isProductionMode) {
-          setIsDesktopMode(true);
-          setPassword('');
-        }
+        if (isCancelled) return;
         if (res?.needsInitialAdminSetup) {
           setMode('SETUP_ADMIN');
         }
@@ -41,6 +38,9 @@ export const LoginModal: React.FC = () => {
       .catch(() => {
         // Ignore when offline or mocked
       });
+    return () => {
+      isCancelled = true;
+    };
   }, [isLocked]);
 
   const handleNumpad = async (char: string) => {
@@ -191,6 +191,8 @@ export const LoginModal: React.FC = () => {
                 <input
                   type="text"
                   required
+                  autoComplete="username"
+                  placeholder="admin"
                   value={setupUsername}
                   onChange={(e) => setSetupUsername(e.target.value)}
                   className="w-full bg-[#171717] border border-[#33302B] rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-[#F7F3EA]"
@@ -266,18 +268,6 @@ export const LoginModal: React.FC = () => {
               ))}
             </div>
 
-            {/* Quick PIN Helper (hidden in desktop production mode) */}
-            {!isDesktopMode && (
-              <div className="text-xs font-semibold text-[#A8A29E] bg-[#171717] py-1.5 px-3 rounded-xl border border-[#33302B] inline-flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-[#C6A15B]" />
-                <span>
-                  {t('PIN الافتراضي:', 'PIN par défaut :')}{' '}
-                  <span className="font-black text-[#C6A15B] tabular-nums">1234</span> (Admin) •{' '}
-                  <span className="font-black text-[#C6A15B] tabular-nums">1111</span> ({t('كاشير', 'Caissier')})
-                </span>
-              </div>
-            )}
-
             {/* Touch Numpad */}
             <div className="grid grid-cols-3 gap-3 max-w-[290px] mx-auto font-mono">
               {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map((k) => (
@@ -321,6 +311,7 @@ export const LoginModal: React.FC = () => {
               </label>
               <input
                 type="text"
+                autoComplete="username"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full bg-[#171717] border border-[#33302B] rounded-xl px-4 py-3 text-base font-bold text-[#F7F3EA] focus:outline-none focus:border-[#C6A15B]"
@@ -333,6 +324,7 @@ export const LoginModal: React.FC = () => {
               </label>
               <input
                 type="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-[#171717] border border-[#33302B] rounded-xl px-4 py-3 text-base font-bold text-[#F7F3EA] focus:outline-none focus:border-[#C6A15B]"

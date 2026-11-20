@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 jobs:
   build-windows-x64:
     name: Windows x64 Electron 22 Release Build
@@ -22,22 +25,88 @@ jobs:
           architecture: 'x64'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Initialize CI log directory & verify Windows MSVC C++20 toolchain
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release\ci-logs" | Out-Null
+          $log = "release\ci-logs\00-environment.log"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msvcPath = ""
+          if (Test-Path $vswhere) {
+            $msvcPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          if (-not $msvcPath) {
+            throw "Windows MSVC C++ Build Tools not detected on runner; required to compile better-sqlite3 (C++20) for Electron ABI 110."
+          }
+          @(
+            "Runner OS      : $($env:RUNNER_OS)",
+            "Runner Arch    : $($env:RUNNER_ARCH)",
+            "Node.js        : $(node -v)",
+            "npm            : $(npm -v)",
+            "Python         : $(python --version 2>&1)",
+            "Visual Studio  : $msvcPath",
+            "GitHub Run ID  : $($env:GITHUB_RUN_ID)",
+            "GitHub Run Num : $($env:GITHUB_RUN_NUMBER)",
+            "GitHub Ref     : $($env:GITHUB_REF_NAME)",
+            "GitHub SHA     : $($env:GITHUB_SHA)",
+            "Timestamp UTC  : $((Get-Date).ToUniversalTime().ToString('o'))"
+          ) | Tee-Object -FilePath $log
 
-      - name: Run automated QA & acceptance tests
-        run: npm test -- --no-color
+      - name: Install pinned dependencies from package-lock.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm ci --legacy-peer-deps --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\00b-npm-ci.log"
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
 
-      - name: TypeScript type check
-        run: npm run lint
+          $ErrorActionPreference = 'Stop'
+          $electronVer = (Get-Content "node_modules\electron\package.json" -Raw | ConvertFrom-Json).version
+          $sqliteVer = (Get-Content "node_modules\better-sqlite3\package.json" -Raw | ConvertFrom-Json).version
+          if ($electronVer -ne "22.3.27") {
+            throw "Electron version drift detected! Strictly pinned to 22.3.27, found $electronVer"
+          }
+          if ($sqliteVer -ne "11.10.0") {
+            throw "better-sqlite3 version drift detected! Expected 11.10.0, found $sqliteVer"
+          }
+          "Verified pinned Electron=$electronVer (ABI 110) and better-sqlite3=$sqliteVer" | Tee-Object -FilePath "release\ci-logs\00-environment.log" -Append
 
-      - name: Build Vite frontend and Electron CJS server
-        run: npm run build:desktop
+      - name: Build Vite frontend and Node 16 Electron CJS server (before tests)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm run build:desktop 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\01-build-desktop.log"
+          if ($LASTEXITCODE -ne 0) { throw "npm run build:desktop failed with exit code $LASTEXITCODE" }
+          if (Test-Path "dist\assets\aistudio") {
+            throw "Development-only dist\assets\aistudio leaked into Vite production build!"
+          }
 
-      - name: Rebuild native better-sqlite3 for Electron 22.3.27 (x64 ABI 110)
-        run: npx electron-rebuild -f -w better-sqlite3 -v 22.3.27 --arch x64
+      - name: Run complete automated QA & acceptance test suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm test -- --no-color 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\02-test-suite.log"
+          if ($LASTEXITCODE -ne 0) { throw "Automated test suite failed with exit code $LASTEXITCODE" }
 
-      - name: Verify rebuilt native better_sqlite3.node (win32 x64)
+      - name: Run TypeScript validation (tsc --noEmit)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm run lint 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\03-typescript-validation.log"
+          if ($LASTEXITCODE -ne 0) { throw "TypeScript validation failed with exit code $LASTEXITCODE" }
+
+      - name: Rebuild native better-sqlite3 from source for Electron 22.3.27 (x64 ABI 110, MSVC C++20)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npx electron-rebuild -f -w better-sqlite3 -v 22.3.27 --arch x64 --build-from-source 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\04-electron-rebuild.log"
+          if ($LASTEXITCODE -ne 0) { throw "electron-rebuild failed with exit code $LASTEXITCODE" }
+
+      - name: Verify rebuilt native better_sqlite3.node (PE32+ x64 ABI 110) & record digest
         shell: pwsh
         run: |
           $native = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
@@ -45,91 +114,179 @@ jobs:
             throw "Native binary missing after electron-rebuild: $native"
           }
           $bytes = [System.IO.File]::ReadAllBytes($native)
+          if ($bytes.Length -lt 64 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "better_sqlite3.node is not a valid Windows PE binary (missing MZ header)"
+          }
           $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
           $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
           if ($machine -ne 0x8664) {
-            throw ("Expected PE x64 (0x8664) native addon, got 0x{0:X4}" -f $machine)
+            throw ("Expected PE32+ x64 (0x8664) native addon, got 0x{0:X4}" -f $machine)
           }
-          Write-Host ("Verified PE32+ x64 better_sqlite3.node ({0} bytes)" -f $bytes.Length)
+          $nativeHash = (Get-FileHash $native -Algorithm SHA256).Hash.ToLower()
+          "NATIVE_SQLITE_SHA256=$nativeHash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          ("Verified rebuilt PE32+ x64 (0x{0:X4}) better_sqlite3.node ({1} bytes) SHA256={2}" -f $machine, $bytes.Length, $nativeHash) | Tee-Object -FilePath "release\ci-logs\06-validation-report.log"
 
       - name: Package Windows x64 NSIS Installer (no auto-publish)
-        run: npx electron-builder --win --x64 --publish never -c.npmRebuild=false
-
-      - name: Verify installer output, unpacked native addon & SHA-256 checksum
         shell: pwsh
         run: |
-          $installer = "release\GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe"
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npx electron-builder --win --x64 --publish never -c.npmRebuild=false 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\05-electron-builder.log"
+          if ($LASTEXITCODE -ne 0) { throw "electron-builder failed with exit code $LASTEXITCODE" }
+
+      - name: Verify installer PE header, app.asar.unpacked resources, native ABI 110 match & SHA-256 checksum
+        shell: pwsh
+        run: |
+          $valLog = "release\ci-logs\06-validation-report.log"
+          $installer = "release\GoldenPalacePOS-Setup-x64.exe"
           $unpackedExe = "release\win-unpacked\GOLDEN PALACE POS.exe"
-          $unpackedNative = "release\win-unpacked\resources\app.asar.unpacked\node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+          $appAsar = "release\win-unpacked\resources\app.asar"
+          $unpackedRoot = "release\win-unpacked\resources\app.asar.unpacked"
+          $unpackedNative = "$unpackedRoot\node_modules\better-sqlite3\build\Release\better_sqlite3.node"
 
-          if (-not (Test-Path $installer)) {
-            throw "Expected installer not found at $installer"
-          }
-          if (-not (Test-Path $unpackedExe)) {
-            throw "Expected unpacked app executable not found at $unpackedExe"
-          }
-          if (-not (Test-Path $unpackedNative)) {
-            throw "Unpacked native better_sqlite3.node missing at $unpackedNative"
+          $requiredPaths = @(
+            $installer,
+            $unpackedExe,
+            $appAsar,
+            $unpackedNative,
+            "$unpackedRoot\dist-electron\server.cjs",
+            "$unpackedRoot\dist\index.html",
+            "$unpackedRoot\build\icon.ico",
+            "$unpackedRoot\build\icon.png",
+            "$unpackedRoot\node_modules\bindings\package.json",
+            "$unpackedRoot\node_modules\file-uri-to-path\package.json",
+            "$unpackedRoot\node_modules\bcryptjs\package.json",
+            "$unpackedRoot\node_modules\iconv-lite\package.json"
+          )
+
+          foreach ($requiredPath in $requiredPaths) {
+            if (-not (Test-Path $requiredPath)) {
+              throw "Required packaged artifact missing: $requiredPath"
+            }
+            $item = Get-Item $requiredPath
+            ("ASSET OK: {0} ({1} bytes)" -f $requiredPath, $item.Length) | Tee-Object -FilePath $valLog -Append
           }
 
+          if ((Test-Path "dist\assets\aistudio") -or (Test-Path "$unpackedRoot\dist\assets\aistudio")) {
+            throw "Development-only aistudio assets leaked into packaged dist!"
+          }
+          "ASSET HYGIENE OK: dist\assets\aistudio absent from dist and app.asar.unpacked" | Tee-Object -FilePath $valLog -Append
+
+          # Verify PE32+ x64 (0x8664) on GOLDEN PALACE POS.exe
           $exeBytes = [System.IO.File]::ReadAllBytes($unpackedExe)
-          $peOffset = [System.BitConverter]::ToInt32($exeBytes, 0x3C)
-          $machine = [System.BitConverter]::ToUInt16($exeBytes, $peOffset + 4)
-          if ($machine -ne 0x8664) {
-            throw ("Expected PE x64 (0x8664) installer target, got 0x{0:X4}" -f $machine)
+          $exePeOffset = [System.BitConverter]::ToInt32($exeBytes, 0x3C)
+          $exeMachine = [System.BitConverter]::ToUInt16($exeBytes, $exePeOffset + 4)
+          if ($exeMachine -ne 0x8664) {
+            throw ("Expected PE32+ x64 (0x8664) app executable, got 0x{0:X4}" -f $exeMachine)
           }
+          ("PE32+ OK: GOLDEN PALACE POS.exe Machine=0x{0:X4} ({1} bytes)" -f $exeMachine, $exeBytes.Length) | Tee-Object -FilePath $valLog -Append
+
+          # Verify PE32+ x64 (0x8664) & exact SHA-256 match on unpacked better_sqlite3.node
+          $unpackedNativeBytes = [System.IO.File]::ReadAllBytes($unpackedNative)
+          $unpackedPeOffset = [System.BitConverter]::ToInt32($unpackedNativeBytes, 0x3C)
+          $unpackedMachine = [System.BitConverter]::ToUInt16($unpackedNativeBytes, $unpackedPeOffset + 4)
+          if ($unpackedMachine -ne 0x8664) {
+            throw ("Expected PE32+ x64 (0x8664) unpacked better_sqlite3.node, got 0x{0:X4}" -f $unpackedMachine)
+          }
+          $unpackedNativeHash = (Get-FileHash $unpackedNative -Algorithm SHA256).Hash.ToLower()
+          if ($unpackedNativeHash -ne $env:NATIVE_SQLITE_SHA256) {
+            throw "Unpacked better_sqlite3.node SHA-256 mismatch! Expected $($env:NATIVE_SQLITE_SHA256), got $unpackedNativeHash"
+          }
+          ("NATIVE ADDON MATCH OK: unpacked better_sqlite3.node Machine=0x{0:X4} SHA256={1}" -f $unpackedMachine, $unpackedNativeHash) | Tee-Object -FilePath $valLog -Append
+
+          # Verify valid Windows PE MZ header & minimum size on NSIS installer
+          $installerBytes = [System.IO.File]::ReadAllBytes($installer)
+          if ($installerBytes.Length -lt 10000000 -or $installerBytes[0] -ne 0x4D -or $installerBytes[1] -ne 0x5A) {
+            throw "Installer binary invalid or unexpectedly small: $($installerBytes.Length) bytes"
+          }
+          $instPeOffset = [System.BitConverter]::ToInt32($installerBytes, 0x3C)
+          $instMachine = [System.BitConverter]::ToUInt16($installerBytes, $instPeOffset + 4)
+          ("INSTALLER PE OK: GoldenPalacePOS-Setup-x64.exe MZ valid, stub Machine=0x{0:X4}, size={1} bytes" -f $instMachine, $installerBytes.Length) | Tee-Object -FilePath $valLog -Append
 
           $file = Get-Item $installer
-          if ($file.Length -lt 10000000) {
-            throw "Installer size unexpectedly small: $($file.Length) bytes"
-          }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
-          "$hash  GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe" | Out-File -Encoding ascii "release\GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe.sha256"
+          "$hash  GoldenPalacePOS-Setup-x64.exe" | Out-File -Encoding ascii "release\GoldenPalacePOS-Setup-x64.exe.sha256"
+
+          $manifest = @{
+            installer = "GoldenPalacePOS-Setup-x64.exe"
+            version = "1.0.0"
+            electronVersion = "22.3.27"
+            electronAbi = 110
+            betterSqlite3Version = "11.10.0"
+            sqliteSchemaVersion = 4
+            sizeBytes = $file.Length
+            installerSha256 = $hash
+            installerStubPeMachine = ("0x{0:X4}" -f $instMachine)
+            appExePeMachine = ("0x{0:X4}" -f $exeMachine)
+            nativeSqlitePeMachine = ("0x{0:X4}" -f $unpackedMachine)
+            nativeSqliteSha256 = $unpackedNativeHash
+            nativeSqliteSha256Matched = $true
+            devAssetsExcluded = $true
+            runnerOs = $env:RUNNER_OS
+            runnerArch = $env:RUNNER_ARCH
+            githubRunId = $env:GITHUB_RUN_ID
+            githubRunNumber = $env:GITHUB_RUN_NUMBER
+            githubRefName = $env:GITHUB_REF_NAME
+            githubSha = $env:GITHUB_SHA
+            builtAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 "release\GoldenPalacePOS-Setup-x64.build-manifest.json"
 
           $summaryLines = @(
             '## Windows x64 Release Build Succeeded',
-            '- Installer: GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe',
+            '- Installer: `GoldenPalacePOS-Setup-x64.exe`',
             "- Size: $($file.Length) bytes",
-            '- Architecture: Windows x64 (PE32+ 0x8664) / Electron 22.3.27 (ABI 110)',
-            "- SHA-256: $hash"
+            "- GitHub Run ID / Number: `$($env:GITHUB_RUN_ID)` / `#$($env:GITHUB_RUN_NUMBER)`",
+            "- Commit SHA: `$($env:GITHUB_SHA)`",
+            '- App & Native SQLite Architecture: Windows PE32+ x64 (`0x8664`) / Electron `22.3.27` (ABI `110`)',
+            "- Installer SHA-256: `$hash`",
+            "- Unpacked better_sqlite3.node SHA-256: `$unpackedNativeHash` (exact match verified)"
           )
           $summaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          Write-Host "Verified $installer ($($file.Length) bytes) SHA256=$hash"
+          ("VERIFIED INSTALLER: {0} ({1} bytes) SHA256={2}" -f $installer, $file.Length, $hash) | Tee-Object -FilePath $valLog -Append
 
-      - name: Upload Windows Installer Artifact
+      - name: Upload Windows Installer, Checksum, Manifest & Validation Logs (Unique Run ID)
         uses: actions/upload-artifact@v4
         with:
-          name: GOLDEN-PALACE-POS-Setup-1.0.0-x64
+          name: GoldenPalacePOS-Setup-x64-run-${{ github.run_number }}-${{ github.run_id }}
           path: |
-            release/GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe
-            release/GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe.sha256
+            release/GoldenPalacePOS-Setup-x64.exe
+            release/GoldenPalacePOS-Setup-x64.exe.sha256
+            release/GoldenPalacePOS-Setup-x64.build-manifest.json
+            release/ci-logs/*.log
+          retention-days: 90
           if-no-files-found: error
 
       - name: Report build failure diagnostics
         if: failure()
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "release/failure-logs" | Out-Null
-          if (Test-Path "release/builder-debug.yml") {
-            Copy-Item "release/builder-debug.yml" "release/failure-logs/" -Force
+          New-Item -ItemType Directory -Force -Path "release\failure-logs" | Out-Null
+          if (Test-Path "release\ci-logs") {
+            Copy-Item "release\ci-logs\*" "release\failure-logs\" -Recurse -Force -ErrorAction SilentlyContinue
           }
-          $npmLogs = Join-Path $env:LOCALAPPDATA "npm-cache/_logs"
+          if (Test-Path "release\builder-debug.yml") {
+            Copy-Item "release\builder-debug.yml" "release\failure-logs\" -Force
+          }
+          $npmLogs = Join-Path $env:LOCALAPPDATA "npm-cache\_logs"
           if (Test-Path $npmLogs) {
-            Get-ChildItem $npmLogs -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 5 | Copy-Item -Destination "release/failure-logs/" -Force
+            Get-ChildItem $npmLogs -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 5 | Copy-Item -Destination "release\failure-logs\" -Force
           }
           $failLines = @(
             '## Windows x64 Release Build Failed',
-            "- Runner: windows-latest ($env:RUNNER_ARCH)",
+            "- Runner: windows-latest ($($env:RUNNER_ARCH))",
+            "- Run ID / Number: $($env:GITHUB_RUN_ID) / #$($env:GITHUB_RUN_NUMBER)",
             "- Node: $(node -v)",
             "- npm: $(npm -v)",
-            '- Inspect attached windows-build-failure-logs artifact and workflow step logs.'
+            '- Inspect attached failure logs artifact and workflow step logs.'
           )
           $failLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: Upload failure diagnostic logs
+      - name: Upload failure diagnostic logs (Unique Run ID)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build-failure-logs
+          name: GoldenPalacePOS-Windows-Failure-Logs-run-${{ github.run_number }}-${{ github.run_id }}
           path: release/failure-logs/**/*
+          retention-days: 90
           if-no-files-found: ignore

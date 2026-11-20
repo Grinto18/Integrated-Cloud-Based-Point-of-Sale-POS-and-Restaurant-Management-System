@@ -1,0 +1,358 @@
+{
+  "restaurant": {
+    "name_ar": "القصر الذهبي",
+    "name_fr": "LE PALAIS D’OR",
+    "currency": "DZD",
+    "currency_label": "DA",
+    "version": "1.0.0"
+  },
+  "categories": [
+    {
+      "code": "CAT-01",
+      "name_ar": "المقبلات",
+      "name_fr": "Entrées",
+      "sort_order": 1,
+      "station": "MAIN_KITCHEN",
+      "color": "amber",
+      "icon": "Soup"
+    },
+    {
+      "code": "CAT-02",
+      "name_ar": "السلطات",
+      "name_fr": "Salades",
+      "sort_order": 2,
+      "station": "MAIN_KITCHEN",
+      "color": "emerald",
+      "icon": "Salad"
+    },
+    {
+      "code": "CAT-03",
+      "name_ar": "الأطباق الرئيسية",
+      "name_fr": "Plats principaux",
+      "sort_order": 3,
+      "station": "MAIN_KITCHEN",
+      "color": "orange",
+      "icon": "UtensilsCrossed"
+    },
+    {
+      "code": "CAT-04",
+      "name_ar": "الأطباق التقليدية",
+      "name_fr": "Plats traditionnels",
+      "sort_order": 4,
+      "station": "MAIN_KITCHEN",
+      "color": "yellow",
+      "icon": "CookingPot"
+    },
+    {
+      "code": "CAT-05",
+      "name_ar": "المشاوي واللحوم",
+      "name_fr": "Grillades & Viandes",
+      "sort_order": 5,
+      "station": "GRILL",
+      "color": "red",
+      "icon": "Flame"
+    },
+    {
+      "code": "CAT-06",
+      "name_ar": "البروشتات",
+      "name_fr": "Brochettes",
+      "sort_order": 6,
+      "station": "GRILL",
+      "color": "rose",
+      "icon": "Beef"
+    },
+    {
+      "code": "CAT-07",
+      "name_ar": "البيتزا",
+      "name_fr": "Pizzas",
+      "sort_order": 7,
+      "station": "MAIN_KITCHEN",
+      "color": "amber",
+      "icon": "Pizza"
+    },
+    {
+      "code": "CAT-08",
+      "name_ar": "التاكوس",
+      "name_fr": "Tacos",
+      "sort_order": 8,
+      "station": "GRILL",
+      "color": "orange",
+      "icon": "Sandwich"
+    },
+    {
+      "code": "CAT-09",
+      "name_ar": "الكالزوني",
+      "name_fr": "Calzones",
+      "sort_order": 9,
+      "station": "MAIN_KITCHEN",
+      "color": "amber",
+      "icon": "Croissant"
+    },
+    {
+      "code": "CAT-10",
+      "name_ar": "المأكولات البحرية",
+      "name_fr": "Fruits de mer",
+      "sort_order": 10,
+      "station": "GRILL",
+      "color": "sky",
+      "icon": "Fish"
+    },
+    {
+      "code": "CAT-11",
+      "name_ar": "الحلويات",
+      "name_fr": "Desserts",
+      "sort_order": 11,
+      "station": "DESSERT",
+      "color": "pink",
+      "icon": "CakeSlice"
+    },
+    {
+      "code": "CAT-12",
+      "name_ar": "المشروبات",
+      "name_fr": "Boissons",
+      "sort_order": 12,
+      "station": "DRINKS",
+      "color": "cyan",
+      "icon": "CupSoda"
+    }
+  ],
+  "products": [
+    { "sku": "GP-01-01", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حميس", "name_fr": "Hmiss", "price": 200, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-02", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "شوربة فريك", "name_fr": "Chorba Frik", "price": 200, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-03", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حريرة", "name_fr": "Harira", "price": 200, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-04", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حساء الحوت", "name_fr": "Soupe de poisson", "price": 400, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-05", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حساء الكرومبيت", "name_fr": "Soupe de chou", "price": 400, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-06", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حساء عدس أحمر", "name_fr": "Soupe de lentilles rouges", "price": 250, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-01-07", "category_ar": "المقبلات", "category_fr": "Entrées", "name_ar": "حساء خضر", "name_fr": "Soupe de légumes", "price": 250, "station": "MAIN_KITCHEN" },
+
+    { "sku": "GP-02-01", "category_ar": "السلطات", "category_fr": "Salades", "name_ar": "سلطة", "name_fr": "Salade verte", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-02-02", "category_ar": "السلطات", "category_fr": "Salades", "name_ar": "مسيدوان", "name_fr": "Macédoine", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-02-03", "category_ar": "السلطات", "category_fr": "Salades", "name_ar": "سلطة سيزار", "name_fr": "Salade César", "price": 400, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-02-04", "category_ar": "السلطات", "category_fr": "Salades", "name_ar": "سلطة التونة", "name_fr": "Salade au thon", "price": 400, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-02-05", "category_ar": "السلطات", "category_fr": "Salades", "name_ar": "سلطة جزائرية", "name_fr": "Salade algérienne", "price": 300, "station": "MAIN_KITCHEN" },
+
+    { "sku": "GP-03-01", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "لوبيا", "name_fr": "Loubia", "price": 250, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-02", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "عدس", "name_fr": "Lentilles", "price": 250, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-03", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "أرز", "name_fr": "Riz", "price": 250, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-04", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "أرز بالزبيب", "name_fr": "Riz aux raisins secs", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-05", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "بولي فارسي", "name_fr": "Poulet farci", "price": 550, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-06", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "إسكالوب بالكريمة", "name_fr": "Escalope à la crème", "price": 550, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-07", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "ستيك بالكريمة", "name_fr": "Steak à la crème", "price": 700, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-08", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "فخذ دجاج محمّر في الفرن", "name_fr": "Cuisse de poulet rôtie au four", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-09", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "بوزلوف", "name_fr": "Bouzellouf", "price": 1000, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-10", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "بكبوكة", "name_fr": "Bakbouka", "price": 800, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-11", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "مثوم", "name_fr": "Mtewem", "price": 500, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-12", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "شطيطحة لحم", "name_fr": "Chtitha viande", "price": 800, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-13", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "شطيطحة ديك رومي", "name_fr": "Chtitha dinde", "price": 700, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-14", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "شطيطحة دجاج", "name_fr": "Chtitha poulet", "price": 550, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-15", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "دجاج مكسيكي", "name_fr": "Poulet mexicain", "price": 450, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-03-16", "category_ar": "الأطباق الرئيسية", "category_fr": "Plats principaux", "name_ar": "إسكالوب مكسيكي", "name_fr": "Escalope mexicaine", "price": 450, "station": "MAIN_KITCHEN" },
+
+    { "sku": "GP-04-01", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "شخشوخة بسكرية", "name_fr": "Chakhchoukha Biskria", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-02", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "شخشوخة قسنطينة", "name_fr": "Chakhchoukha Constantinoise", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-03", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "كسكس سميد", "name_fr": "Couscous semoule", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-04", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "كسكس شعير", "name_fr": "Couscous orge", "price": 400, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-05", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "كسكس بلوط", "name_fr": "Couscous glands", "price": 500, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-06", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "كسكس بالسمك", "name_fr": "Couscous au poisson", "price": 1200, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-07", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "تريدة", "name_fr": "Trida", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-08", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "تليتلي", "name_fr": "Tlitli", "price": 250, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-09", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "رشتة", "name_fr": "Rechta", "price": 300, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-10", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "المسفوف", "name_fr": "Mesfouf", "price": 350, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-11", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "الدوبارة", "name_fr": "Dobara", "price": 350, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-04-12", "category_ar": "الأطباق التقليدية", "category_fr": "Plats traditionnels", "name_ar": "طاجين حلو", "name_fr": "Tajine Hlou", "price": 600, "station": "MAIN_KITCHEN" },
+
+    { "sku": "GP-05-01", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "أنتركوت", "name_fr": "Entrecôte", "price": 900, "station": "GRILL" },
+    { "sku": "GP-05-02", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "نوزات", "name_fr": "Noisette", "price": 600, "station": "GRILL" },
+    { "sku": "GP-05-03", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "كوطلات", "name_fr": "Côtelettes", "price": 600, "station": "GRILL" },
+    { "sku": "GP-05-04", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "إسكالوب", "name_fr": "Escalope grillée", "price": 350, "station": "GRILL" },
+    { "sku": "GP-05-05", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "إسكالوب ماريني", "name_fr": "Escalope marinée", "price": 400, "station": "GRILL" },
+    { "sku": "GP-05-06", "category_ar": "المشاوي واللحوم", "category_fr": "Grillades & Viandes", "name_ar": "فياند هاشي", "name_fr": "Viande hachée", "price": 200, "station": "GRILL" },
+
+    { "sku": "GP-06-01", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "شيش كباب", "name_fr": "Chiche Kebab", "price": 80, "station": "GRILL" },
+    { "sku": "GP-06-02", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "ملفوف", "name_fr": "Melfouf", "price": 80, "station": "GRILL" },
+    { "sku": "GP-06-03", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "إسكالوب رويال", "name_fr": "Brochette Escalope Royale", "price": 80, "station": "GRILL" },
+    { "sku": "GP-06-04", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "إسكالوب ماريني", "name_fr": "Brochette Escalope Marinée", "price": 50, "station": "GRILL" },
+    { "sku": "GP-06-05", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "مرقاز", "name_fr": "Merguez", "price": 80, "station": "GRILL" },
+    { "sku": "GP-06-06", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "بروشات كبدة بقر", "name_fr": "Brochette foie de bœuf", "price": 150, "station": "GRILL" },
+    { "sku": "GP-06-07", "category_ar": "البروشتات", "category_fr": "Brochettes", "name_ar": "بروشات كبدة خروف", "name_fr": "Brochette foie d’agneau", "price": 250, "station": "GRILL" },
+
+    {
+      "sku": "GP-07-01",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "مارغريتا",
+      "name_fr": "Margherita",
+      "price": 350,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-01-L", "name_ar": "L", "name_fr": "Taille L", "price": 350 },
+        { "sku": "GP-07-01-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 700 }
+      ]
+    },
+    {
+      "sku": "GP-07-02",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "تونة",
+      "name_fr": "Thon",
+      "price": 400,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-02-L", "name_ar": "L", "name_fr": "Taille L", "price": 400 },
+        { "sku": "GP-07-02-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 800 }
+      ]
+    },
+    {
+      "sku": "GP-07-03",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "دجاج",
+      "name_fr": "Poulet",
+      "price": 400,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-03-L", "name_ar": "L", "name_fr": "Taille L", "price": 400 },
+        { "sku": "GP-07-03-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 800 }
+      ]
+    },
+    {
+      "sku": "GP-07-04",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "لحم",
+      "name_fr": "Viande",
+      "price": 500,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-04-L", "name_ar": "L", "name_fr": "Taille L", "price": 500 },
+        { "sku": "GP-07-04-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1000 }
+      ]
+    },
+    {
+      "sku": "GP-07-05",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "ثلاثة أجبان",
+      "name_fr": "3 Fromages",
+      "price": 600,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-05-L", "name_ar": "L", "name_fr": "Taille L", "price": 600 },
+        { "sku": "GP-07-05-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1100 }
+      ]
+    },
+    {
+      "sku": "GP-07-06",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "أربعة فصول",
+      "name_fr": "4 Saisons",
+      "price": 800,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-06-L", "name_ar": "L", "name_fr": "Taille L", "price": 800 },
+        { "sku": "GP-07-06-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1500 }
+      ]
+    },
+    {
+      "sku": "GP-07-07",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "خضروات",
+      "name_fr": "Végétarienne",
+      "price": 600,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-07-L", "name_ar": "L", "name_fr": "Taille L", "price": 600 },
+        { "sku": "GP-07-07-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1100 }
+      ]
+    },
+    {
+      "sku": "GP-07-08",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "دجاج مدخن",
+      "name_fr": "Poulet fumé",
+      "price": 500,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-08-L", "name_ar": "L", "name_fr": "Taille L", "price": 500 },
+        { "sku": "GP-07-08-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1000 }
+      ]
+    },
+    {
+      "sku": "GP-07-09",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "لحم مدخن",
+      "name_fr": "Viande fumée",
+      "price": 600,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-09-L", "name_ar": "L", "name_fr": "Taille L", "price": 600 },
+        { "sku": "GP-07-09-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 1200 }
+      ]
+    },
+    {
+      "sku": "GP-07-10",
+      "category_ar": "البيتزا",
+      "category_fr": "Pizzas",
+      "name_ar": "رويال",
+      "name_fr": "Royale",
+      "price": 1000,
+      "station": "MAIN_KITCHEN",
+      "variants": [
+        { "sku": "GP-07-10-L", "name_ar": "L", "name_fr": "Taille L", "price": 1000 },
+        { "sku": "GP-07-10-XL", "name_ar": "XL", "name_fr": "Taille XL", "price": 2000 }
+      ]
+    },
+
+    { "sku": "GP-08-01", "category_ar": "التاكوس", "category_fr": "Tacos", "name_ar": "تاكوس دجاج", "name_fr": "Tacos Poulet", "price": 400, "station": "GRILL" },
+    { "sku": "GP-08-02", "category_ar": "التاكوس", "category_fr": "Tacos", "name_ar": "تاكوس لحم", "name_fr": "Tacos Viande", "price": 600, "station": "GRILL" },
+    { "sku": "GP-08-03", "category_ar": "التاكوس", "category_fr": "Tacos", "name_ar": "تاكوس ثلاثة أجبان", "name_fr": "Tacos 3 Fromages", "price": 600, "station": "GRILL" },
+
+    { "sku": "GP-09-01", "category_ar": "الكالزوني", "category_fr": "Calzones", "name_ar": "كالزوني دجاج", "name_fr": "Calzone Poulet", "price": 500, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-09-02", "category_ar": "الكالزوني", "category_fr": "Calzones", "name_ar": "كالزوني لحم", "name_fr": "Calzone Viande", "price": 600, "station": "MAIN_KITCHEN" },
+    { "sku": "GP-09-03", "category_ar": "الكالزوني", "category_fr": "Calzones", "name_ar": "كالزوني ثلاثة أجبان", "name_fr": "Calzone 3 Fromages", "price": 600, "station": "MAIN_KITCHEN" },
+
+    { "sku": "GP-10-01", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "بايلا", "name_fr": "Paella", "price": 2000, "station": "GRILL" },
+    { "sku": "GP-10-02", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "سلمون مشوي", "name_fr": "Saumon grillé", "price": 2500, "station": "GRILL" },
+    { "sku": "GP-10-03", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "سردين مقلي", "name_fr": "Sardines frites", "price": 450, "station": "GRILL" },
+    { "sku": "GP-10-04", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "روجي", "name_fr": "Rouget", "price": 1000, "station": "GRILL" },
+    { "sku": "GP-10-05", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "دوراد مشوي", "name_fr": "Dorade grillée", "price": 1000, "station": "GRILL" },
+    { "sku": "GP-10-06", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "سبادون", "name_fr": "Espadon", "price": 2200, "station": "GRILL" },
+    { "sku": "GP-10-07", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "كروفيت مشوي", "name_fr": "Crevettes grillées", "price": 2300, "station": "GRILL" },
+    { "sku": "GP-10-08", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "كلامار مشوي", "name_fr": "Calamars grillés", "price": 2500, "station": "GRILL" },
+    { "sku": "GP-10-09", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "فواكه البحر بالصلصة", "name_fr": "Fruits de mer en sauce", "price": 2300, "station": "GRILL" },
+    { "sku": "GP-10-10", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "مشكل سمك لشخص", "name_fr": "Assiette poisson 1 personne", "price": 1600, "station": "GRILL" },
+    { "sku": "GP-10-11", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "مشكل سمك لشخصين", "name_fr": "Plateau poisson 2 personnes", "price": 3600, "station": "GRILL" },
+    { "sku": "GP-10-12", "category_ar": "المأكولات البحرية", "category_fr": "Fruits de mer", "name_ar": "مشكل سمك لأربعة أشخاص", "name_fr": "Plateau poisson 4 personnes", "price": 9500, "station": "GRILL" },
+
+    { "sku": "GP-11-01", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "موس الشوكولاتة", "name_fr": "Mousse au chocolat", "price": 300, "station": "DESSERT" },
+    { "sku": "GP-11-02", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "سلطة فواكه", "name_fr": "Salade de fruits", "price": 400, "station": "DESSERT" },
+    { "sku": "GP-11-03", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "فلان كراميل", "name_fr": "Flan caramel", "price": 200, "station": "DESSERT" },
+    { "sku": "GP-11-04", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "دلاع", "name_fr": "Pastèque", "price": 200, "station": "DESSERT" },
+    { "sku": "GP-11-05", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "بطيخ", "name_fr": "Melon", "price": 200, "station": "DESSERT" },
+    { "sku": "GP-11-06", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "تيراميسو", "name_fr": "Tiramisu", "price": 300, "station": "DESSERT" },
+    { "sku": "GP-11-07", "category_ar": "الحلويات", "category_fr": "Desserts", "name_ar": "كريم بروليه", "name_fr": "Crème brûlée", "price": 300, "station": "DESSERT" },
+
+    { "sku": "GP-12-01", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "كوكا كولا", "name_fr": "Coca-Cola", "price": 80, "station": "DRINKS" },
+    { "sku": "GP-12-02", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "حمود 33 سل", "name_fr": "Hamoud 33cl", "price": 70, "station": "DRINKS" },
+    { "sku": "GP-12-03", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "حمود 25 سل", "name_fr": "Hamoud 25cl", "price": 40, "station": "DRINKS" },
+    { "sku": "GP-12-04", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "حمود 1 لتر", "name_fr": "Hamoud 1L", "price": 150, "station": "DRINKS" },
+    { "sku": "GP-12-05", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "كوكا كولا 1 لتر", "name_fr": "Coca-Cola 1L", "price": 150, "station": "DRINKS" },
+    { "sku": "GP-12-06", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "عصير إفروي", "name_fr": "Jus Ifri", "price": 80, "station": "DRINKS" },
+    { "sku": "GP-12-07", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "عصير 1 لتر", "name_fr": "Jus 1L", "price": 200, "station": "DRINKS" },
+    { "sku": "GP-12-08", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "علبة كوكا كولا", "name_fr": "Canette Coca-Cola", "price": 100, "station": "DRINKS" },
+    { "sku": "GP-12-09", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "المشروبات الجاهزة", "subcategory_fr": "Boissons industrielles", "name_ar": "علبة حمود بوعلام", "name_fr": "Canette Hamoud Boualem", "price": 80, "station": "DRINKS" },
+
+    { "sku": "GP-12-10", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير الليمون", "name_fr": "Jus de citron", "price": 200, "station": "DRINKS" },
+    { "sku": "GP-12-11", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير البرتقال", "name_fr": "Jus d’orange", "price": 250, "station": "DRINKS" },
+    { "sku": "GP-12-12", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير الرمان", "name_fr": "Jus de grenade", "price": 250, "station": "DRINKS" },
+    { "sku": "GP-12-13", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير كوكتال", "name_fr": "Cocktail de fruits", "price": 400, "station": "DRINKS" },
+    { "sku": "GP-12-14", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير البطيخ", "name_fr": "Jus de melon", "price": 150, "station": "DRINKS" },
+    { "sku": "GP-12-15", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير الدلاع", "name_fr": "Jus de pastèque", "price": 150, "station": "DRINKS" },
+    { "sku": "GP-12-16", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "عصير الموز", "name_fr": "Jus de banane", "price": 300, "station": "DRINKS" },
+    { "sku": "GP-12-17", "category_ar": "المشروبات", "category_fr": "Boissons", "subcategory_ar": "العصائر الطبيعية", "subcategory_fr": "Jus naturels", "name_ar": "موهيتو", "name_fr": "Mojito", "price": 300, "station": "DRINKS" }
+  ]
+}

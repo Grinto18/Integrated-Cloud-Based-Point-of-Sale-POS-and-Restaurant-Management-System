@@ -330,6 +330,10 @@ export const SettingsModal: React.FC = () => {
       setStaffModalError(t('الاسم الكامل واسم المستخدم وكلمة المرور مطلوبة', 'Nom, identifiant et mot de passe requis'));
       return;
     }
+    if (newPassword.length < 8) {
+      setStaffModalError(t('كلمة المرور يجب أن تتكون من 8 أحرف على الأقل', 'Le mot de passe doit contenir au moins 8 caractères'));
+      return;
+    }
     if (newPin.trim() && (newPin.trim().length < 4 || newPin.trim().length > 12)) {
       setStaffModalError(t('رمز PIN يجب أن يتكون من 4 إلى 12 خانة', 'Le code PIN doit contenir entre 4 et 12 caractères'));
       return;
@@ -1907,9 +1911,12 @@ export const SettingsModal: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-[#A8A29E] text-xs mb-1">{t('كلمة المرور *', 'Mot de passe *')}</label>
+                <label className="block text-[#A8A29E] text-xs mb-1">
+                  {t('كلمة المرور (8 أحرف على الأقل) *', 'Mot de passe (8 car. min) *')}
+                </label>
                 <input
                   type="password"
+                  minLength={8}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className="w-full bg-[#171717] border border-[#33302B] rounded-xl p-2.5 text-[#F7F3EA] font-mono"

@@ -1,10 +1,24 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const http = require('http');
 const crypto = require('crypto');
 const { fork } = require('child_process');
+const {
+  DEFAULT_APPROVED_EXTERNAL_ORIGINS,
+  evaluateNavigation,
+  evaluateWindowOpen,
+  evaluatePermission,
+  isBlockedProductionShortcut,
+  buildDesktopCspHeader,
+  validateTrustedIpcSender,
+  validateNoArgs,
+  validatePrintSilentArgs,
+  buildSafeDesktopInfo,
+  sanitizeStartupLogText,
+  classifyStartupError,
+} = require('./ipcSecurity.cjs');
 
 app.setName('Golden Palace POS');
 
@@ -12,6 +26,8 @@ let mainWindow = null;
 let serverProcess = null;
 let serverPort = 3456;
 let isAppQuitting = false;
+let sessionSecurityConfigured = false;
+const securedWebContents = new WeakSet();
 
 function getOrCreateDesktopJwtSecret(userDataDir) {
   const secretPath = path.join(userDataDir, '.jwt_secret');
@@ -59,28 +75,58 @@ function findAvailablePort(preferredPort = 3456) {
   });
 }
 
-function waitForServerHealth(port, timeoutMs = 20000) {
+function waitForServerHealth(port, childProcess, getStderrTail, timeoutMs = 20000) {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let pollTimer = null;
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      childProcess?.removeListener?.('exit', onEarlyExit);
+      childProcess?.removeListener?.('error', onChildError);
+      fn(value);
+    };
+
+    const onEarlyExit = (code, signal) => {
+      const err = new Error(`Local POS server exited unexpectedly (code=${code}, signal=${signal})`);
+      err.stderrTail = typeof getStderrTail === 'function' ? getStderrTail() : '';
+      finish(reject, err);
+    };
+
+    const onChildError = (childErr) => {
+      const err = childErr instanceof Error ? childErr : new Error(String(childErr || 'Server process spawn error'));
+      err.stderrTail = typeof getStderrTail === 'function' ? getStderrTail() : '';
+      finish(reject, err);
+    };
+
+    childProcess?.once?.('exit', onEarlyExit);
+    childProcess?.once?.('error', onChildError);
+
     const attempt = () => {
+      if (settled) return;
       if (Date.now() - startedAt > timeoutMs) {
-        reject(new Error('Timed out waiting for GOLDEN PALACE POS local server'));
+        const err = new Error('Timed out waiting for GOLDEN PALACE POS local server');
+        err.stderrTail = typeof getStderrTail === 'function' ? getStderrTail() : '';
+        finish(reject, err);
         return;
       }
       const req = http.get(`http://127.0.0.1:${port}/api/health`, (res) => {
         res.resume();
         if (res.statusCode && res.statusCode < 400) {
-          resolve();
+          finish(resolve);
         } else {
-          setTimeout(attempt, 250);
+          pollTimer = setTimeout(attempt, 250);
         }
       });
       req.on('error', () => {
-        setTimeout(attempt, 250);
+        pollTimer = setTimeout(attempt, 250);
       });
       req.setTimeout(1500, () => {
         req.destroy();
-        setTimeout(attempt, 250);
+        pollTimer = setTimeout(attempt, 250);
       });
     };
     attempt();
@@ -88,16 +134,40 @@ function waitForServerHealth(port, timeoutMs = 20000) {
 }
 
 function resolveBundledPaths() {
-  const appRoot = app.isPackaged ? path.dirname(app.getAppPath()) : path.resolve(__dirname, '..');
-  const distDir = fs.existsSync(path.join(app.getAppPath(), 'dist'))
-    ? path.join(app.getAppPath(), 'dist')
-    : path.join(appRoot, 'dist');
-  const serverEntry = fs.existsSync(path.join(app.getAppPath(), 'dist-electron', 'server.cjs'))
-    ? path.join(app.getAppPath(), 'dist-electron', 'server.cjs')
-    : path.join(appRoot, 'dist-electron', 'server.cjs');
-  const iconPath = fs.existsSync(path.join(appRoot, 'build', 'icon.ico'))
-    ? path.join(appRoot, 'build', 'icon.ico')
-    : path.join(__dirname, '..', 'build', 'icon.png');
+  const appPath = app.getAppPath();
+  const unpackedRoot = appPath.endsWith('.asar')
+    ? `${appPath}.unpacked`
+    : path.join(path.dirname(appPath), 'app.asar.unpacked');
+  const appRoot = app.isPackaged ? path.dirname(appPath) : path.resolve(__dirname, '..');
+
+  const pickFirstExisting = (candidates) => {
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return candidates[0];
+  };
+
+  // Prefer real filesystem paths inside app.asar.unpacked so ELECTRON_RUN_AS_NODE=1 child processes
+  // (where Electron's ASAR virtual filesystem is disabled) can execute server.cjs and serve dist/ cleanly.
+  const distDir = pickFirstExisting([
+    path.join(unpackedRoot, 'dist'),
+    path.join(appRoot, 'dist'),
+    path.join(appPath, 'dist'),
+  ]);
+  const serverEntry = pickFirstExisting([
+    path.join(unpackedRoot, 'dist-electron', 'server.cjs'),
+    path.join(appRoot, 'dist-electron', 'server.cjs'),
+    path.join(appPath, 'dist-electron', 'server.cjs'),
+  ]);
+  const iconPath = pickFirstExisting([
+    path.join(unpackedRoot, 'build', 'icon.ico'),
+    path.join(appRoot, 'build', 'icon.ico'),
+    path.join(unpackedRoot, 'build', 'icon.png'),
+    path.join(__dirname, '..', 'build', 'icon.ico'),
+    path.join(__dirname, '..', 'build', 'icon.png'),
+  ]);
   return { distDir, serverEntry, iconPath };
 }
 
@@ -114,6 +184,9 @@ async function startLocalPosServer(userDataDir) {
   if (!fs.existsSync(serverEntry)) {
     throw new Error(`Desktop server bundle missing at ${serverEntry}. Run npm run build:server first.`);
   }
+
+  let startupStderrBuffer = '';
+  const MAX_STDERR_BUFFER = 4096;
 
   serverProcess = fork(serverEntry, [], {
     cwd: userDataDir,
@@ -137,10 +210,12 @@ async function startLocalPosServer(userDataDir) {
     process.stdout.write(`[POS-SERVER] ${chunk}`);
   });
   serverProcess.stderr?.on('data', (chunk) => {
-    process.stderr.write(`[POS-SERVER-ERR] ${chunk}`);
+    const text = String(chunk);
+    startupStderrBuffer = (startupStderrBuffer + text).slice(-MAX_STDERR_BUFFER);
+    process.stderr.write(`[POS-SERVER-ERR] ${text}`);
   });
 
-  await waitForServerHealth(serverPort);
+  await waitForServerHealth(serverPort, serverProcess, () => startupStderrBuffer);
   return { dbPath, backupDir };
 }
 
@@ -183,50 +258,228 @@ function stopLocalPosServer() {
   });
 }
 
-function registerIpcHandlers(paths) {
-  ipcMain.handle('desktop:get-printers', async () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return [];
-    const printers = await mainWindow.webContents.getPrintersAsync();
-    return printers.map((p) => ({
-      name: p.name,
-      displayName: p.displayName || p.name,
-      description: p.description || '',
-      status: p.status,
-      isDefault: Boolean(p.isDefault),
-    }));
+function configureSessionSecurity(port, isPackaged = Boolean(app?.isPackaged)) {
+  const defaultSession = session?.defaultSession;
+  if (!defaultSession || sessionSecurityConfigured) {
+    return;
+  }
+  sessionSecurityConfigured = true;
+
+  // Deny-by-default permission request handler
+  if (typeof defaultSession.setPermissionRequestHandler === 'function') {
+    defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+      const origin = details?.requestingUrl || webContents?.getURL?.() || '';
+      const allowed = evaluatePermission(permission, origin, port);
+      callback(Boolean(allowed));
+    });
+  }
+
+  // Deny-by-default permission check handler
+  if (typeof defaultSession.setPermissionCheckHandler === 'function') {
+    defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+      const origin = requestingOrigin || webContents?.getURL?.() || '';
+      return Boolean(evaluatePermission(permission, origin, port));
+    });
+  }
+
+  // Defense-in-depth desktop CSP & security response headers on loopback POS origin
+  if (defaultSession.webRequest && typeof defaultSession.webRequest.onHeadersReceived === 'function') {
+    const cspValue = buildDesktopCspHeader(port, true);
+    defaultSession.webRequest.onHeadersReceived(
+      { urls: [`http://127.0.0.1:${port}/*`] },
+      (details, callback) => {
+        const headers = { ...(details.responseHeaders || {}) };
+        // Remove any duplicate casing before applying canonical desktop headers
+        for (const key of Object.keys(headers)) {
+          const lower = key.toLowerCase();
+          if (
+            lower === 'content-security-policy' ||
+            lower === 'x-frame-options' ||
+            lower === 'x-content-type-options' ||
+            lower === 'referrer-policy'
+          ) {
+            delete headers[key];
+          }
+        }
+        headers['Content-Security-Policy'] = [cspValue];
+        headers['X-Content-Type-Options'] = ['nosniff'];
+        headers['X-Frame-Options'] = ['DENY'];
+        headers['Referrer-Policy'] = ['no-referrer'];
+        callback({ responseHeaders: headers });
+      }
+    );
+  }
+}
+
+function attachWebContentsSecurity(contents, options = {}) {
+  if (!contents || securedWebContents.has(contents)) {
+    return;
+  }
+  securedWebContents.add(contents);
+
+  const port = options.serverPort ?? serverPort;
+  const isPackaged = options.isPackaged !== undefined ? Boolean(options.isPackaged) : Boolean(app?.isPackaged);
+  const approvedExternalOrigins = options.approvedExternalOrigins || DEFAULT_APPROVED_EXTERNAL_ORIGINS;
+  const openExternal =
+    typeof options.openExternal === 'function'
+      ? options.openExternal
+      : (safeUrl) => shell?.openExternal?.(safeUrl);
+
+  // Deny all unauthorized popup windows; only explicitly approved HTTPS links open externally
+  if (typeof contents.setWindowOpenHandler === 'function') {
+    contents.setWindowOpenHandler((details) => {
+      const decision = evaluateWindowOpen(details?.url, {
+        approvedExternalOrigins,
+        openExternal,
+      });
+      return { action: decision.action };
+    });
+  }
+
+  // Restrict top-level navigation strictly to the local loopback POS origin
+  if (typeof contents.on === 'function') {
+    contents.on('will-navigate', (event, navigationUrl) => {
+      const check = evaluateNavigation(navigationUrl, port);
+      if (!check.allowed) {
+        event.preventDefault();
+      }
+    });
+
+    contents.on('will-redirect', (event, navigationUrl) => {
+      const check = evaluateNavigation(navigationUrl, port);
+      if (!check.allowed) {
+        event.preventDefault();
+      }
+    });
+
+    // Lock down DevTools & view-source shortcuts in packaged production builds
+    // while preserving POS cashier function keys (F1-F12) and dev diagnostics in dev mode
+    if (isPackaged) {
+      contents.on('before-input-event', (event, input) => {
+        if (isBlockedProductionShortcut(input)) {
+          event.preventDefault();
+        }
+      });
+
+      contents.on('devtools-opened', () => {
+        try {
+          contents.closeDevTools?.();
+        } catch {
+          // Ignore closeDevTools error if contents is already closing
+        }
+      });
+    }
+  }
+}
+
+function configureApplicationMenu(win, isPackaged = Boolean(app?.isPackaged)) {
+  if (!isPackaged) {
+    // Preserve standard menu & developer diagnostics in development mode
+    return;
+  }
+  if (Menu && typeof Menu.setApplicationMenu === 'function') {
+    Menu.setApplicationMenu(null);
+  }
+  if (win && typeof win.removeMenu === 'function') {
+    win.removeMenu();
+  }
+}
+
+function registerIpcHandlers(_paths) {
+  ipcMain.handle('desktop:get-printers', async (event, ...args) => {
+    const senderCheck = validateTrustedIpcSender(event, mainWindow, serverPort);
+    if (!senderCheck.valid) {
+      throw new Error(senderCheck.error);
+    }
+    const argCheck = validateNoArgs(args);
+    if (!argCheck.valid) {
+      throw new Error(argCheck.error);
+    }
+    try {
+      const printers = await mainWindow.webContents.getPrintersAsync();
+      return printers.map((p) => ({
+        name: String(p.name || ''),
+        displayName: String(p.displayName || p.name || ''),
+        description: String(p.description || ''),
+        status: p.status,
+        isDefault: Boolean(p.isDefault),
+      }));
+    } catch {
+      return [];
+    }
   });
 
-  ipcMain.handle('desktop:print-silent', async (_event, options = {}) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return { success: false, failureReason: 'No active POS window' };
+  ipcMain.handle('desktop:print-silent', async (event, ...args) => {
+    const senderCheck = validateTrustedIpcSender(event, mainWindow, serverPort);
+    if (!senderCheck.valid) {
+      return {
+        success: false,
+        failureReason: senderCheck.error,
+        error: senderCheck.error,
+      };
     }
+
+    const argCheck = validatePrintSilentArgs(args);
+    if (!argCheck.valid) {
+      return {
+        success: false,
+        failureReason: argCheck.error,
+        error: argCheck.error,
+      };
+    }
+
+    const { deviceName, copies } = argCheck.options;
     return new Promise((resolve) => {
-      mainWindow.webContents.print(
-        {
-          silent: true,
-          printBackground: true,
-          deviceName: options.deviceName || undefined,
-          copies: Number(options.copies) > 0 ? Number(options.copies) : 1,
-        },
-        (success, failureReason) => {
-          resolve({ success: Boolean(success), failureReason: failureReason || undefined });
-        }
-      );
+      try {
+        mainWindow.webContents.print(
+          {
+            silent: true,
+            printBackground: true,
+            deviceName,
+            copies,
+          },
+          (success, failureReason) => {
+            const reason = failureReason ? String(failureReason) : undefined;
+            resolve({
+              success: Boolean(success),
+              failureReason: reason,
+              error: Boolean(success) ? undefined : reason,
+            });
+          }
+        );
+      } catch {
+        resolve({
+          success: false,
+          failureReason: 'Desktop silent print failed',
+          error: 'Desktop silent print failed',
+        });
+      }
     });
   });
 
-  ipcMain.handle('desktop:get-info', async () => ({
-    appName: 'GOLDEN PALACE POS',
-    appVersion: app.getVersion(),
-    platform: process.platform,
-    userDataDir: paths.userDataDir,
-    dbPath: paths.dbPath,
-    backupDir: paths.backupDir,
-    serverUrl: `http://127.0.0.1:${serverPort}`,
+  ipcMain.handle('desktop:get-info', async (event, ...args) => ({
+    ...(() => {
+      const senderCheck = validateTrustedIpcSender(event, mainWindow, serverPort);
+      if (!senderCheck.valid) {
+        throw new Error(senderCheck.error);
+      }
+      const argCheck = validateNoArgs(args);
+      if (!argCheck.valid) {
+        throw new Error(argCheck.error);
+      }
+      return buildSafeDesktopInfo({
+        appVersion: app.getVersion(),
+        platform: process.platform,
+        serverPort,
+      });
+    })(),
   }));
 }
 
 function createMainWindow(iconPath) {
+  const isPackaged = Boolean(app?.isPackaged);
+  configureSessionSecurity(serverPort, isPackaged);
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -238,10 +491,21 @@ function createMainWindow(iconPath) {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false,
+      devTools: !isPackaged,
     },
+  });
+
+  configureApplicationMenu(mainWindow, isPackaged);
+  attachWebContentsSecurity(mainWindow.webContents, {
+    serverPort,
+    isPackaged,
+    approvedExternalOrigins: DEFAULT_APPROVED_EXTERNAL_ORIGINS,
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${serverPort}`);
@@ -255,6 +519,14 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
+  app.on('web-contents-created', (_event, contents) => {
+    attachWebContentsSecurity(contents, {
+      serverPort,
+      isPackaged: Boolean(app?.isPackaged),
+      approvedExternalOrigins: DEFAULT_APPROVED_EXTERNAL_ORIGINS,
+    });
+  });
+
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -270,10 +542,12 @@ if (!gotSingleInstanceLock) {
       registerIpcHandlers({ userDataDir, dbPath, backupDir });
       createMainWindow(iconPath);
     } catch (err) {
-      dialog.showErrorBox(
-        'GOLDEN PALACE POS — Startup Error',
-        err instanceof Error ? err.message : String(err)
+      const safeLog = sanitizeStartupLogText(
+        `${err instanceof Error ? err.message : String(err)}\n${err?.stderrTail || ''}`
       );
+      console.error('[GOLDEN-PALACE-STARTUP-ERROR]', safeLog);
+      const diagnostic = classifyStartupError(err, err?.stderrTail || '');
+      dialog.showErrorBox(diagnostic.title, diagnostic.message);
       await stopLocalPosServer();
       app.quit();
     }

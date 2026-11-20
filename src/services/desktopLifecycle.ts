@@ -138,7 +138,7 @@ export function getDesktopRuntimeStatus(
  */
 export function runFirstRunDatabaseAudit(targetDb: Database.Database): DesktopRuntimeStatus {
   runSafeMigrations(targetDb);
-  migratePlaintextPins();
+  migratePlaintextPins(targetDb);
   return getDesktopRuntimeStatus(targetDb);
 }
 

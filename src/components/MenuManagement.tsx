@@ -18,12 +18,19 @@ import {
   CheckCircle2,
   Calculator,
   RefreshCw,
+  Upload,
+  SlidersHorizontal,
 } from 'lucide-react';
 
-export const MenuManagement: React.FC = () => {
+interface MenuManagementProps {
+  onOpenMenuImport?: () => void;
+}
+
+export const MenuManagement: React.FC<MenuManagementProps> = ({ onOpenMenuImport }) => {
   const { lang, t } = useLanguage();
   const { hasRole } = useAuth();
   const canManage = hasRole(['ADMIN', 'MANAGER']);
+  const canImportMenu = hasRole(['ADMIN', 'OWNER']);
   const canDeleteCategory = hasRole(['ADMIN']);
 
   const [categories, setCategories] = useState<Category[]>([]);
@@ -60,6 +67,74 @@ export const MenuManagement: React.FC = () => {
   const [priceHistoryProd, setPriceHistoryProd] = useState<Product | null>(null);
   const [priceHistoryList, setPriceHistoryList] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState<boolean>(false);
+
+  // Global Add-ons management modal (empty by default; admin-configured in SQLite)
+  const [showAddonsModal, setShowAddonsModal] = useState<boolean>(false);
+  const [globalAddons, setGlobalAddons] = useState<any[]>([]);
+  const [loadingAddons, setLoadingAddons] = useState<boolean>(false);
+  const [newAddonNameAr, setNewAddonNameAr] = useState<string>('');
+  const [newAddonNameFr, setNewAddonNameFr] = useState<string>('');
+  const [newAddonPrice, setNewAddonPrice] = useState<string>('');
+  const [addonFormError, setAddonFormError] = useState<string>('');
+  const [savingAddon, setSavingAddon] = useState<boolean>(false);
+
+  const loadGlobalAddons = async () => {
+    setLoadingAddons(true);
+    try {
+      const list = await api.getAddons(true);
+      setGlobalAddons(Array.isArray(list) ? list : []);
+    } catch {
+      setGlobalAddons([]);
+    } finally {
+      setLoadingAddons(false);
+    }
+  };
+
+  const handleCreateGlobalAddon = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddonFormError('');
+    const parsedPrice = Number(newAddonPrice);
+    if (!newAddonNameAr.trim() || !Number.isInteger(parsedPrice) || parsedPrice < 0) {
+      setAddonFormError(t('يرجى إدخال اسم الإضافة وسعر صحيح بالدينار (عدد صحيح >= 0)', 'Nom et prix entier (>= 0 DA) requis'));
+      return;
+    }
+    setSavingAddon(true);
+    try {
+      await api.createAddon({
+        productId: null,
+        nameAr: newAddonNameAr.trim(),
+        nameFr: newAddonNameFr.trim() || undefined,
+        price: parsedPrice,
+        isActive: true,
+      });
+      setNewAddonNameAr('');
+      setNewAddonNameFr('');
+      setNewAddonPrice('');
+      await Promise.all([loadGlobalAddons(), loadAll()]);
+    } catch (err: any) {
+      setAddonFormError(err?.message || t('فشل إضافة الخيار', 'Échec de création'));
+    } finally {
+      setSavingAddon(false);
+    }
+  };
+
+  const handleToggleAddonActive = async (addon: any) => {
+    try {
+      await api.updateAddon(addon.id, { isActive: !addon.isActive });
+      await Promise.all([loadGlobalAddons(), loadAll()]);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteGlobalAddon = async (addonId: number) => {
+    try {
+      await api.deleteAddon(addonId);
+      await Promise.all([loadGlobalAddons(), loadAll()]);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     loadAll();
@@ -313,6 +388,32 @@ export const MenuManagement: React.FC = () => {
 
           {canManage && (
             <>
+              {canImportMenu && onOpenMenuImport && (
+                <button
+                  type="button"
+                  onClick={onOpenMenuImport}
+                  data-testid="open-menu-import-btn"
+                  className="bg-[#171717] hover:border-[#C6A15B] text-[#F7F3EA] px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border border-[#33302B] text-xs sm:text-sm font-black transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <Upload className="w-4 h-4 text-[#C6A15B]" />
+                  <span>{t('استيراد القائمة', 'Importer le menu')}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAddonFormError('');
+                  setShowAddonsModal(true);
+                  loadGlobalAddons();
+                }}
+                data-testid="open-addons-manager-btn"
+                className="bg-[#171717] hover:border-[#C6A15B] text-[#F7F3EA] px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border border-[#33302B] text-xs sm:text-sm font-black transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <SlidersHorizontal className="w-4 h-4 text-[#C6A15B]" />
+                <span>{t('الإضافات', 'Suppléments')}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1283,6 +1384,114 @@ export const MenuManagement: React.FC = () => {
                     </div>
                     {h.reason && <p className="text-xs text-[#F7F3EA] mt-1 font-bold">{h.reason}</p>}
                     <p className="text-[11px] text-[#A8A29E] mt-0.5">{h.changedBy || 'Admin'}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global Add-ons Management Modal (Empty by default; Admin-configured) */}
+      {showAddonsModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#222222] border border-[#C6A15B]/40 rounded-3xl max-w-xl w-full p-6 shadow-2xl space-y-4 text-[#F7F3EA]">
+            <div className="flex items-center justify-between border-b border-[#33302B] pb-3">
+              <div>
+                <h3 className="font-black text-lg text-[#F7F3EA]">
+                  {t('إدارة الإضافات والخيارات المخصصة', 'Gestion des Suppléments & Options')}
+                </h3>
+                <p className="text-xs text-[#A8A29E] mt-0.5">
+                  {t(
+                    'القائمة فارغة افتراضياً؛ يمكنك إضافة إضافات عامة وتسعيرها بالدينار لتظهر عند الطلب.',
+                    'Liste vide par défaut ; ajoutez vos suppléments et tarifs en DA.'
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddonsModal(false)}
+                className="p-2 rounded-xl bg-[#171717] border border-[#33302B] text-[#A8A29E] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateGlobalAddon} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+              <input
+                type="text"
+                value={newAddonNameAr}
+                onChange={(e) => setNewAddonNameAr(e.target.value)}
+                placeholder={t('اسم الإضافة بالعربية (مثال: جبن إضافي)', 'Nom arabe')}
+                className="sm:col-span-5 bg-[#171717] border border-[#33302B] rounded-xl px-3 py-2 text-xs font-bold text-[#F7F3EA]"
+              />
+              <input
+                type="text"
+                value={newAddonNameFr}
+                onChange={(e) => setNewAddonNameFr(e.target.value)}
+                placeholder={t('الاسم بالفرنسية (اختياري)', 'Nom français')}
+                className="sm:col-span-4 bg-[#171717] border border-[#33302B] rounded-xl px-3 py-2 text-xs font-bold text-[#F7F3EA]"
+              />
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={newAddonPrice}
+                onChange={(e) => setNewAddonPrice(e.target.value)}
+                placeholder="DA"
+                className="sm:col-span-3 bg-[#171717] border border-[#33302B] rounded-xl px-3 py-2 text-xs font-mono font-bold text-[#C6A15B]"
+              />
+              {addonFormError && (
+                <div className="sm:col-span-12 text-xs text-rose-400 font-bold">{addonFormError}</div>
+              )}
+              <button
+                type="submit"
+                disabled={savingAddon}
+                className="sm:col-span-12 py-2.5 rounded-xl bg-[#C6A15B] hover:bg-[#D4B475] text-[#171717] font-black text-xs cursor-pointer transition"
+              >
+                {savingAddon ? t('جاري الحفظ...', 'Enregistrement...') : t('إضافة خيار جديد', 'Ajouter le supplément')}
+              </button>
+            </form>
+
+            <div className="space-y-2 max-h-64 overflow-y-auto no-scrollbar pt-2 border-t border-[#33302B]">
+              {loadingAddons ? (
+                <div className="text-center py-6 text-xs text-[#A8A29E]">{t('جاري التحميل...', 'Chargement...')}</div>
+              ) : globalAddons.length === 0 ? (
+                <div className="text-center py-6 text-xs text-[#8E8882]">
+                  {t('لا توجد إضافات مُسجّلة حالياً (قائمة فارغة افتراضياً).', 'Aucun supplément configuré.')}
+                </div>
+              ) : (
+                globalAddons.map((addon) => (
+                  <div
+                    key={addon.id}
+                    className="bg-[#171717] border border-[#33302B] rounded-xl px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div>
+                      <div className="font-bold text-[#F7F3EA]">{addon.nameAr}</div>
+                      {addon.nameFr && <div className="text-[11px] text-[#A8A29E]">{addon.nameFr}</div>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-[#C6A15B]">{Number(addon.price)} DA</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAddonActive(addon)}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                          addon.isActive !== false
+                            ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700/50'
+                            : 'bg-neutral-800 text-[#A8A29E] border border-[#33302B]'
+                        }`}
+                      >
+                        {addon.isActive !== false ? t('مفعّل', 'Actif') : t('معطّل', 'Inactif')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteGlobalAddon(addon.id)}
+                        className="p-1.5 rounded-lg bg-rose-950/50 text-rose-300 hover:bg-rose-900/60 cursor-pointer"
+                        title={t('حذف', 'Supprimer')}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

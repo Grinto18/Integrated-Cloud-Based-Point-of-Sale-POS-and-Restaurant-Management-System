@@ -2,21 +2,104 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import net from 'net';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import { printJobs } from '../db/schema.ts';
+import { getLocalDatabasePath } from '../db/sqlitePath.ts';
 import type { PrinterConnectionType, SystemPrinterInfo } from '../types.ts';
 import { buildArabicTestEscPos, buildFeedAndCutTestEscPos } from '../utils/escposArabic.ts';
 import { sanitizeErrorMessage } from '../utils/redact.ts';
+
+export type PrintDeliveryState = 'CONFIRMED' | 'SPOOLED' | 'FAILED';
 
 export interface PrintTransportResult {
   success: boolean;
   spoolerAccepted: boolean;
   hardwareConfirmed: boolean;
+  deliveryState?: PrintDeliveryState;
   mode: string;
   message: string;
   error?: string;
+}
+
+export function resolveDeliveryState(result: Pick<PrintTransportResult, 'success' | 'hardwareConfirmed' | 'deliveryState'>): PrintDeliveryState {
+  if (result.deliveryState) return result.deliveryState;
+  if (!result.success) return 'FAILED';
+  return result.hardwareConfirmed ? 'CONFIRMED' : 'SPOOLED';
+}
+
+export function sanitizeWindowsPrinterName(printerName: string): string | null {
+  const trimmed = String(printerName || '').trim();
+  if (!trimmed || trimmed.length > 128) return null;
+  if (trimmed.startsWith('-') || trimmed.startsWith('.') || trimmed.includes('..')) return null;
+  // Strictly permit safe Windows printer / share name characters; reject all shell metacharacters
+  if (!/^[a-zA-Z0-9 _.-]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+export function buildWindowsSpoolerInvocation(
+  tempFilePath: string,
+  printerName: string
+): { command: 'cmd.exe'; args: string[]; safePrinter: string; uncTarget: string } {
+  const safePrinter = sanitizeWindowsPrinterName(printerName);
+  if (!safePrinter) {
+    const err = new Error('اسم الطابعة غير صالح أو يحتوي على رموز غير مسموح بها');
+    (err as any).code = 'INVALID_PRINTER_NAME';
+    throw err;
+  }
+  const cleanTempPath = String(tempFilePath || '').trim();
+  if (!cleanTempPath || /[\r\n\0"&|;<>^%!]/.test(cleanTempPath)) {
+    const err = new Error('مسار ملف الطباعة المؤقت غير صالح');
+    (err as any).code = 'INVALID_SPOOL_PATH';
+    throw err;
+  }
+  const uncTarget = `\\\\localhost\\${safePrinter}`;
+  return {
+    command: 'cmd.exe',
+    // /d disables AutoRun registry commands; argument array avoids shell string interpolation
+    args: ['/d', '/c', 'copy', '/b', cleanTempPath, uncTarget],
+    safePrinter,
+    uncTarget,
+  };
+}
+
+export function getPrintSpoolPayloadDir(): string {
+  return path.join(path.dirname(getLocalDatabasePath()), 'print_spool_payloads');
+}
+
+export function getPrintSpoolPayloadPath(jobId: number): string {
+  return path.join(getPrintSpoolPayloadDir(), `job_${jobId}.bin`);
+}
+
+export function saveFullPrintPayload(jobId: number, buffer: Buffer): string {
+  const dir = getPrintSpoolPayloadDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+  const filePath = getPrintSpoolPayloadPath(jobId);
+  fs.writeFileSync(filePath, buffer, { mode: 0o600 });
+  return filePath;
+}
+
+export function readFullPrintPayload(jobId: number): Buffer | null {
+  const filePath = getPrintSpoolPayloadPath(jobId);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const data = fs.readFileSync(filePath);
+    return data.length > 0 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+export function deleteFullPrintPayload(jobId: number): void {
+  const filePath = getPrintSpoolPayloadPath(jobId);
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {
+    // ignore cleanup failure
+  }
 }
 
 export type PrintTransportOverride = (params: {
@@ -120,6 +203,7 @@ export async function sendToNetworkPrinter(
       success: false,
       spoolerAccepted: false,
       hardwareConfirmed: false,
+      deliveryState: 'FAILED',
       mode: 'network_invalid_ip',
       message: 'عنوان IP للطابعة الشبكية غير صالح',
       error: 'INVALID_NETWORK_PRINTER_IP',
@@ -160,6 +244,7 @@ export async function sendToNetworkPrinter(
         success: false,
         spoolerAccepted: false,
         hardwareConfirmed: false,
+        deliveryState: 'FAILED',
         mode: 'network_failed',
         message: attemptRes.errMsg || 'فشل الاتصال بالطابعة الشبكية',
         error: attemptRes.errMsg || 'NETWORK_PRINTER_UNREACHABLE',
@@ -167,12 +252,15 @@ export async function sendToNetworkPrinter(
     }
   }
 
+  // Honest transport reporting: raw TCP 9100 socket write confirms network acceptance only,
+  // NOT physical paper output (requires explicit /confirm or bidirectional hardware telemetry).
   return {
     success: true,
     spoolerAccepted: true,
-    hardwareConfirmed: true,
+    hardwareConfirmed: false,
+    deliveryState: 'SPOOLED',
     mode: 'network_tcp_9100',
-    message: `تم إرسال أمر الطباعة مباشرة إلى الطابعة الشبكية ${cleanIp}:${cleanPort} (${copies} نسخة).`,
+    message: `تم إرسال بيانات الطباعة عبر الشبكة إلى ${cleanIp}:${cleanPort} (${copies} نسخة) — بانتظار تأكيد خروج الورقة مادياً.`,
   };
 }
 
@@ -183,37 +271,55 @@ export async function sendToWindowsSpooler(
   orderNumber = 'TICKET',
   isReprint = false
 ): Promise<PrintTransportResult> {
+  const validPrinter = sanitizeWindowsPrinterName(printerName);
+  if (!validPrinter) {
+    return {
+      success: false,
+      spoolerAccepted: false,
+      hardwareConfirmed: false,
+      deliveryState: 'FAILED',
+      mode: 'windows_invalid_printer_name',
+      message: 'اسم الطابعة غير صالح أو يحتوي على رموز غير مسموح بها',
+      error: 'INVALID_PRINTER_NAME',
+    };
+  }
+
   if (process.platform !== 'win32') {
     return {
       success: false,
       spoolerAccepted: false,
       hardwareConfirmed: false,
+      deliveryState: 'FAILED',
       mode: 'windows_spooler_unavailable',
       message: 'خدمة Windows Spooler متاحة فقط على نظام Windows. يرجى استخدام الطباعة عبر المتصفح/Electron أو طابعة الشبكة IP.',
       error: 'WINDOWS_SPOOLER_NOT_ON_WINDOWS',
     };
   }
 
-  const safePrinter = String(printerName || 'CAFETERIA').replace(/[^a-zA-Z0-9_\-. ]/g, '').trim() || 'CAFETERIA';
-  const safeOrder = String(orderNumber || 'TICKET').replace(/[^a-zA-Z0-9_-]/g, '');
+  const safeOrder = String(orderNumber || 'TICKET').replace(/[^a-zA-Z0-9_-]/g, '') || 'TICKET';
   const tempFilePath = path.join(os.tmpdir(), `gp_ticket_${safeOrder}_${Date.now()}_${isReprint ? 'dup' : 'orig'}.bin`);
+  const invocation = buildWindowsSpoolerInvocation(tempFilePath, validPrinter);
 
   try {
-    fs.writeFileSync(tempFilePath, buffer);
-    const cmd = `copy /b "${tempFilePath}" "\\\\localhost\\${safePrinter}"`;
+    fs.writeFileSync(tempFilePath, buffer, { mode: 0o600 });
 
     for (let c = 0; c < copies; c++) {
       const execRes = await new Promise<{ ok: boolean; errMsg?: string }>((resolve) => {
-        exec(cmd, { timeout: 6000 }, (err, stdout, stderr) => {
-          if (err) {
-            resolve({
-              ok: false,
-              errMsg: String(stderr || err.message || 'فشل إرسال البيانات إلى Windows Spooler').trim(),
-            });
-          } else {
-            resolve({ ok: true });
+        execFile(
+          invocation.command,
+          invocation.args,
+          { timeout: 6000, windowsHide: true },
+          (err, _stdout, stderr) => {
+            if (err) {
+              resolve({
+                ok: false,
+                errMsg: String(stderr || err.message || 'فشل إرسال البيانات إلى Windows Spooler').trim(),
+              });
+            } else {
+              resolve({ ok: true });
+            }
           }
-        });
+        );
       });
 
       if (!execRes.ok) {
@@ -221,20 +327,22 @@ export async function sendToWindowsSpooler(
           success: false,
           spoolerAccepted: false,
           hardwareConfirmed: false,
+          deliveryState: 'FAILED',
           mode: 'windows_spooler_failed',
-          message: `فشل الإرسال إلى طابعة Windows (${safePrinter}): ${execRes.errMsg}`,
+          message: `فشل الإرسال إلى طابعة Windows (${invocation.safePrinter}): ${execRes.errMsg}`,
           error: execRes.errMsg,
         };
       }
     }
 
-    // Note honestly: Windows copy/spooler acceptance does NOT guarantee paper physically exited
+    // Honest reporting: Windows spooler acceptance does NOT guarantee physical paper output
     return {
       success: true,
       spoolerAccepted: true,
       hardwareConfirmed: false,
+      deliveryState: 'SPOOLED',
       mode: 'spooled_to_windows',
-      message: `تم قبول مهمة الطباعة في Windows Spooler (${safePrinter}) [${copies} نسخة] — بانتظار إخراج الورقة من الطابعة.`,
+      message: `تم قبول مهمة الطباعة في Windows Spooler (${invocation.safePrinter}) [${copies} نسخة] — بانتظار تأكيد خروج الورقة مادياً.`,
     };
   } finally {
     setTimeout(() => {
@@ -282,14 +390,15 @@ export async function dispatchPrintTransport(params: {
   }
 
   // BROWSER / Electron silent print / USB WebSerial are executed client-side;
-  // server records the job state honestly without claiming hardware exit unless confirmed.
+  // server records spooler acceptance honestly without claiming physical paper confirmation.
   return {
     success: true,
     spoolerAccepted: Boolean(params.clientHandled),
-    hardwareConfirmed: Boolean(params.clientHandled),
+    hardwareConfirmed: false,
+    deliveryState: 'SPOOLED',
     mode: params.connectionType === 'USB' ? 'usb_client_ready' : 'browser_ready',
     message: params.clientHandled
-      ? 'تم إرسال وتنفيذ مهمة الطباعة عبر واجهة سطح المكتب/المتصفح.'
+      ? 'تم إرسال مهمة الطباعة إلى نظام سطح المكتب/المتصفح — بانتظار تأكيد خروج الورقة مادياً.'
       : 'تم تسجيل مهمة الطباعة وتجهيزها للتنفيذ عبر المتصفح.',
   };
 }
@@ -319,8 +428,9 @@ export async function createAndProcessPrintJob(input: {
 }> {
   const isReprint = Boolean(input.isReprint);
   const safeOrderNumber = String(input.orderNumber || 'UNKNOWN').trim() || 'UNKNOWN';
-  const safePrinterName =
-    String(input.printerName || 'CAFETERIA').replace(/[^a-zA-Z0-9_\-. ]/g, '').trim() || 'CAFETERIA';
+  const rawPrinterName = String(input.printerName ?? 'CAFETERIA').trim() || 'CAFETERIA';
+  const validatedPrinterName = sanitizeWindowsPrinterName(rawPrinterName);
+  const storedPrinterName = validatedPrinterName || rawPrinterName.slice(0, 128);
   const jobType = String(input.jobType || 'RECEIPT').toUpperCase();
   const connectionType: PrinterConnectionType =
     input.connectionType && ['WINDOWS_SPOOLER', 'NETWORK_IP', 'USB', 'BROWSER'].includes(input.connectionType)
@@ -358,7 +468,7 @@ export async function createAndProcessPrintJob(input: {
       orderId: input.orderId && Number(input.orderId) > 0 ? Number(input.orderId) : null,
       orderNumber: safeOrderNumber,
       jobType,
-      printerName: safePrinterName,
+      printerName: storedPrinterName,
       connectionType,
       targetIp: input.targetIp || null,
       targetPort: input.targetPort ? Number(input.targetPort) : 9100,
@@ -376,6 +486,26 @@ export async function createAndProcessPrintJob(input: {
     .returning();
 
   const jobRow = inserted[0];
+
+  const hasExplicitFullPayload = Boolean(
+    (typeof input.rawBase64 === 'string' && input.rawBase64.trim().length > 0) ||
+      (typeof input.textContent === 'string' && input.textContent.length > 0)
+  );
+  const buffer =
+    typeof input.rawBase64 === 'string' && input.rawBase64.trim().length > 0
+      ? Buffer.from(input.rawBase64, 'base64')
+      : typeof input.textContent === 'string' && input.textContent.length > 0
+      ? Buffer.from(input.textContent, 'utf-8')
+      : Buffer.from(`TICKET ${safeOrderNumber}\nGOLDEN PALACE POS\n\n\n`, 'utf-8');
+
+  // Persist the exact full binary payload on disk so retry/reprint NEVER falls back to truncated payloadPreview
+  if (hasExplicitFullPayload && buffer.length > 0) {
+    try {
+      saveFullPrintPayload(jobRow.id, buffer);
+    } catch (persistErr: any) {
+      console.error('Failed to persist full print spool payload:', sanitizeErrorMessage(persistErr));
+    }
+  }
 
   // Move to PROCESSING before dispatching
   await db
@@ -403,6 +533,7 @@ export async function createAndProcessPrintJob(input: {
         success: false,
         spoolerAccepted: false,
         hardwareConfirmed: false,
+        deliveryState: 'FAILED',
         mode: 'client_failed',
         message: String(input.clientError),
         error: String(input.clientError),
@@ -410,16 +541,10 @@ export async function createAndProcessPrintJob(input: {
     };
   }
 
-  const buffer = input.rawBase64
-    ? Buffer.from(input.rawBase64, 'base64')
-    : input.textContent
-    ? Buffer.from(input.textContent, 'utf-8')
-    : Buffer.from(`TICKET ${safeOrderNumber}\nGOLDEN PALACE POS\n\n\n`, 'utf-8');
-
   try {
     const transportResult = await dispatchPrintTransport({
       connectionType,
-      printerName: safePrinterName,
+      printerName: storedPrinterName,
       targetIp: input.targetIp,
       targetPort: input.targetPort,
       copies,
@@ -428,13 +553,15 @@ export async function createAndProcessPrintJob(input: {
       isReprint,
       clientHandled: input.clientHandled,
     });
+    const deliveryState = resolveDeliveryState(transportResult);
+    const enrichedResult: PrintTransportResult = { ...transportResult, deliveryState };
 
-    if (!transportResult.success) {
+    if (!enrichedResult.success) {
       const failedRows = await db
         .update(printJobs)
         .set({
           status: 'FAILED',
-          errorMessage: transportResult.error || transportResult.message,
+          errorMessage: enrichedResult.error || enrichedResult.message,
           spoolerAccepted: false,
           updatedAt: new Date().toISOString(),
         })
@@ -444,7 +571,7 @@ export async function createAndProcessPrintJob(input: {
       return {
         deduplicated: false,
         job: failedRows[0],
-        transportResult,
+        transportResult: enrichedResult,
       };
     }
 
@@ -452,8 +579,8 @@ export async function createAndProcessPrintJob(input: {
       .update(printJobs)
       .set({
         status: 'PRINTED',
-        spoolerAccepted: transportResult.spoolerAccepted,
-        confirmedAt: transportResult.hardwareConfirmed ? new Date().toISOString() : null,
+        spoolerAccepted: enrichedResult.spoolerAccepted,
+        confirmedAt: enrichedResult.hardwareConfirmed ? new Date().toISOString() : null,
         errorMessage: null,
         updatedAt: new Date().toISOString(),
       })
@@ -463,7 +590,7 @@ export async function createAndProcessPrintJob(input: {
     return {
       deduplicated: false,
       job: doneRows[0],
-      transportResult,
+      transportResult: enrichedResult,
     };
   } catch (err: any) {
     const errMsg = sanitizeErrorMessage(err) || 'فشل غير متوقع أثناء الطباعة';
@@ -485,6 +612,7 @@ export async function createAndProcessPrintJob(input: {
         success: false,
         spoolerAccepted: false,
         hardwareConfirmed: false,
+        deliveryState: 'FAILED',
         mode: 'exception',
         message: errMsg,
         error: errMsg,
@@ -506,6 +634,30 @@ export async function retryExistingPrintJob(
     throw new Error('هذه المهمة مطبوعة بالفعل. استخدم «إعادة طباعة» لطباعة نسخة إضافية.');
   }
 
+  // Strictly resolve full binary spool payload; NEVER fall back to truncated payloadPreview
+  let buffer: Buffer | null = null;
+  if (typeof overrideRawBase64 === 'string' && overrideRawBase64.trim().length > 0) {
+    const decoded = Buffer.from(overrideRawBase64.trim(), 'base64');
+    if (decoded.length > 0) {
+      buffer = decoded;
+      try {
+        saveFullPrintPayload(jobId, decoded);
+      } catch {
+        // non-fatal; we still have decoded buffer in memory
+      }
+    }
+  } else {
+    buffer = readFullPrintPayload(jobId);
+  }
+
+  if (!buffer || buffer.length === 0) {
+    const err = new Error(
+      'تعذر إعادة المحاولة: بيانات الطباعة الأصلية الكاملة غير متوفرة (ممنوع إعادة الطباعة من معاينة مختصرة).'
+    );
+    (err as any).code = 'MISSING_FULL_PRINT_PAYLOAD';
+    throw err;
+  }
+
   await db
     .update(printJobs)
     .set({
@@ -515,13 +667,6 @@ export async function retryExistingPrintJob(
       updatedAt: new Date().toISOString(),
     })
     .where(eq(printJobs.id, jobId));
-
-  const buffer = overrideRawBase64
-    ? Buffer.from(overrideRawBase64, 'base64')
-    : Buffer.from(
-        existing.payloadPreview || `RETRY TICKET ${existing.orderNumber}\nGOLDEN PALACE POS\n\n\n`,
-        'utf-8'
-      );
 
   const transportResult = await dispatchPrintTransport({
     connectionType: (existing.connectionType as PrinterConnectionType) || 'WINDOWS_SPOOLER',
@@ -533,20 +678,24 @@ export async function retryExistingPrintJob(
     orderNumber: existing.orderNumber,
     isReprint: existing.isReprint,
   });
+  const enrichedResult: PrintTransportResult = {
+    ...transportResult,
+    deliveryState: resolveDeliveryState(transportResult),
+  };
 
   const updated = await db
     .update(printJobs)
     .set({
-      status: transportResult.success ? 'PRINTED' : 'FAILED',
-      spoolerAccepted: transportResult.spoolerAccepted,
-      confirmedAt: transportResult.hardwareConfirmed ? new Date().toISOString() : null,
-      errorMessage: transportResult.success ? null : transportResult.error || transportResult.message,
+      status: enrichedResult.success ? 'PRINTED' : 'FAILED',
+      spoolerAccepted: enrichedResult.spoolerAccepted,
+      confirmedAt: enrichedResult.hardwareConfirmed ? new Date().toISOString() : null,
+      errorMessage: enrichedResult.success ? null : enrichedResult.error || enrichedResult.message,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(printJobs.id, jobId))
     .returning();
 
-  return { job: updated[0], transportResult };
+  return { job: updated[0], transportResult: enrichedResult };
 }
 
 export async function runLivePrinterTest(params: {

@@ -19,6 +19,7 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   RefreshCw,
+  Upload,
   X,
 } from 'lucide-react';
 import { Role } from '../types.ts';
@@ -30,6 +31,7 @@ export type ActiveTab =
   | 'kitchen'
   | 'sync'
   | 'menu'
+  | 'menu-import'
   | 'inventory'
   | 'waste'
   | 'purchases'
@@ -119,6 +121,14 @@ export const Navigation: React.FC<NavigationProps> = ({
       shortcut: 'F3',
       icon: UtensilsCrossed,
       allowedRoles: ['ADMIN', 'MANAGER'],
+      group: 'CORE',
+    },
+    {
+      id: 'menu-import',
+      labelAr: 'استيراد القائمة',
+      labelFr: 'Import Menu',
+      icon: Upload,
+      allowedRoles: ['ADMIN', 'OWNER'],
       group: 'CORE',
     },
     {

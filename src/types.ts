@@ -1,4 +1,4 @@
-export type Role = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN' | 'INVENTORY';
+export type Role = 'OWNER' | 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN' | 'INVENTORY';
 
 export interface User {
   id: number;
@@ -30,7 +30,10 @@ export interface ProductVariant {
   productId: number;
   nameAr: string;
   nameFr?: string | null;
+  price?: number | null;
   priceAdjustment: string | number;
+  sku?: string | null;
+  isActive?: boolean;
 }
 
 export interface ProductAddon {
@@ -39,6 +42,8 @@ export interface ProductAddon {
   nameAr: string;
   nameFr?: string | null;
   price: string | number;
+  isActive?: boolean;
+  createdAt?: string | null;
 }
 
 export interface ProductRecipeItem {
@@ -58,12 +63,16 @@ export interface Product {
   nameAr: string;
   nameFr?: string | null;
   nameEn?: string | null;
+  sku?: string | null;
+  subcategoryAr?: string | null;
+  subcategoryFr?: string | null;
   description?: string | null;
   price: string | number;
   costPrice?: string | number;
   image?: string | null;
   barcode?: string | null;
   isAvailable: boolean;
+  isActive?: boolean;
   station: string;
   variants?: ProductVariant[];
   addons?: ProductAddon[];
@@ -119,6 +128,11 @@ export interface Order {
   status: 'NEW' | 'CONFIRMED' | 'PREPARING' | 'READY' | 'COMPLETED' | 'CANCELLED' | 'REFUNDED';
   subtotal: string | number;
   discount: string | number;
+  discountType?: 'FIXED' | 'PERCENT' | null;
+  discountValue?: string | number | null;
+  discountReason?: string | null;
+  discountAuthorizedBy?: number | null;
+  discountAuthorizedAt?: string | null;
   deliveryFee: string | number;
   taxRate?: string | number;
   taxAmount?: string | number;

@@ -1,10 +1,14 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { apiRouter } from './src/server/api.ts';
 import { ensureServerRuntimeJwtSecret, getJwtSecret } from './src/middleware/auth.ts';
+import { apiErrorHandler } from './src/middleware/errorHandler.ts';
+import {
+  createSecurityHeadersMiddleware,
+  createStrictCorsMiddleware,
+} from './src/middleware/httpSecurity.ts';
 import { sanitizeErrorMessage } from './src/utils/redact.ts';
 import { backupManager } from './src/services/backupService.ts';
 import { closeDatabase, db, sqlite } from './src/db/index.ts';
@@ -63,6 +67,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const app = express();
+app.disable('x-powered-by');
 
 const portArgIndex = process.argv.indexOf('--port');
 const argPort = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
@@ -72,24 +77,29 @@ const hostArgIndex = process.argv.indexOf('--host');
 const argHost = hostArgIndex !== -1 ? process.argv[hostArgIndex + 1] : undefined;
 const HOST = argHost || process.env.HOST || '0.0.0.0';
 
-app.use(cors());
+const isDesktopRuntime = process.env.GOLDEN_PALACE_DESKTOP === '1';
+const isProductionRuntime = process.env.NODE_ENV === 'production';
+const allowIframePreview =
+  !isDesktopRuntime &&
+  (!isProductionRuntime ||
+    /ais-(dev|pre)-/i.test(process.env.APP_URL || '') ||
+    process.env.ALLOW_IFRAME_PREVIEW === '1');
+
+const httpSecurityConfig = {
+  port: PORT,
+  isDesktop: isDesktopRuntime,
+  isProduction: isProductionRuntime,
+  allowIframePreview,
+};
+
+app.use(createSecurityHeadersMiddleware(httpSecurityConfig));
+app.use(createStrictCorsMiddleware(httpSecurityConfig));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Health Check
-app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    restaurant: 'GOLDEN PALACE POS - القصر الذهبي',
-    branch: 'عند الجيجلي • حسين داي',
-    phone: '0791755614',
-    desktopMode: process.env.GOLDEN_PALACE_DESKTOP === '1',
-    time: new Date().toISOString(),
-  });
-});
-
-// Mount All Backend API Routes
+// Mount All Backend API Routes (includes live DB-verified /api/health and JSON 404/error handlers)
 app.use('/api', apiRouter);
+app.use('/api', apiErrorHandler);
 
 let httpServer: ReturnType<typeof app.listen> | null = null;
 let isShuttingDown = false;
@@ -145,14 +155,25 @@ async function initializeDatabaseAndBackups() {
     if (isProductionOrDesktop) {
       // Production / Desktop safe init: never inject demo users, categories, products, or tables
       const audit = runFirstRunDatabaseAudit(sqlite);
+      if (audit.integrityCheck !== 'ok') {
+        console.error('❌ DATABASE_CORRUPTED: PRAGMA integrity_check failed during startup audit.');
+        closeDatabase();
+        process.exit(1);
+      }
       console.log(
         `🖥️ Production SQLite ready (${audit.dbPath}) — users: ${audit.usersCount}, integrity: ${audit.integrityCheck}`
       );
+    } else if (process.env.GOLDEN_PALACE_ALLOW_DEMO_SEED === '1') {
+      const existingUsers = await db.select().from(users).limit(1);
+      if (existingUsers.length === 0) {
+        console.log('📦 Seeding initial Golden Palace POS development SQLite database...');
+        await seedDatabase({ allowDemoUsers: true });
+      }
+      await ensureThirtyTables();
     } else {
       const existingUsers = await db.select().from(users).limit(1);
       if (existingUsers.length === 0) {
-        console.log('📦 Seeding initial Golden Palace POS SQLite database...');
-        await seedDatabase();
+        console.log('🛡️ Empty database initialized without demo users (complete setup at /api/system/setup-admin or set GOLDEN_PALACE_ALLOW_DEMO_SEED=1 in dev).');
       }
       await ensureThirtyTables();
     }
@@ -198,6 +219,9 @@ async function bootstrap() {
   } else {
     console.error('❌ Production dist directory not found:', distPath);
   }
+
+  // Centralized error handler fallback for body-parser / unexpected middleware errors
+  app.use(apiErrorHandler);
 
   httpServer = app.listen(Number(PORT), HOST, () => {
     console.log(`🏰 GOLDEN PALACE POS Server active on http://${HOST}:${PORT}`);

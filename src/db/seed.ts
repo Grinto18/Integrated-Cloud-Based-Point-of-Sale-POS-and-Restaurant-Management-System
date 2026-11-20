@@ -53,8 +53,46 @@ export async function seedCatalogAndTablesOnly() {
   }
 }
 
-export async function seedDatabase() {
-  console.log('--- Starting Golden Palace POS Database Seeding ---');
+export interface SeedDatabaseOptions {
+  allowDemoUsers?: boolean;
+}
+
+export function isProductionOrDesktopSeedBlocked(env: Record<string, string | undefined> = process.env): boolean {
+  return (
+    env.NODE_ENV === 'production' ||
+    env.GOLDEN_PALACE_DESKTOP === '1' ||
+    env.GOLDEN_PALACE_DB_MODE === 'production' ||
+    env.SKIP_DEFAULT_USER_SEED === '1'
+  );
+}
+
+export function isDemoUserSeedingAllowed(
+  options?: SeedDatabaseOptions,
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  if (isProductionOrDesktopSeedBlocked(env)) {
+    return false;
+  }
+  return (
+    env.GOLDEN_PALACE_ALLOW_DEMO_SEED === '1' ||
+    options?.allowDemoUsers === true ||
+    env.VITEST === 'true'
+  );
+}
+
+export async function seedDatabase(options?: SeedDatabaseOptions) {
+  if (isProductionOrDesktopSeedBlocked()) {
+    throw new Error(
+      'SECURITY_BLOCK: Demo database seeding is strictly disabled in production and desktop environments.'
+    );
+  }
+  if (!isDemoUserSeedingAllowed(options)) {
+    throw new Error(
+      'SECURITY_BLOCK: Demo user seeding requires explicit development configuration (GOLDEN_PALACE_ALLOW_DEMO_SEED=1).'
+    );
+  }
+
+  console.log('--- Starting Golden Palace POS Development Database Seeding ---');
 
   // 1. Settings
   const settingsData = [

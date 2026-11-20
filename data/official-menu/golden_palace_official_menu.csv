@@ -1,0 +1,106 @@
+﻿sku,category_ar,category_fr,subcategory_ar,subcategory_fr,name_ar,name_fr,price,variant_l_price,variant_xl_price,station
+GP-01-01,المقبلات,Entrées,,,حميس,Hmiss,200,,,MAIN_KITCHEN
+GP-01-02,المقبلات,Entrées,,,شوربة فريك,Chorba Frik,200,,,MAIN_KITCHEN
+GP-01-03,المقبلات,Entrées,,,حريرة,Harira,200,,,MAIN_KITCHEN
+GP-01-04,المقبلات,Entrées,,,حساء الحوت,Soupe de poisson,400,,,MAIN_KITCHEN
+GP-01-05,المقبلات,Entrées,,,حساء الكرومبيت,Soupe de chou,400,,,MAIN_KITCHEN
+GP-01-06,المقبلات,Entrées,,,حساء عدس أحمر,Soupe de lentilles rouges,250,,,MAIN_KITCHEN
+GP-01-07,المقبلات,Entrées,,,حساء خضر,Soupe de légumes,250,,,MAIN_KITCHEN
+GP-02-01,السلطات,Salades,,,سلطة,Salade verte,300,,,MAIN_KITCHEN
+GP-02-02,السلطات,Salades,,,مسيدوان,Macédoine,300,,,MAIN_KITCHEN
+GP-02-03,السلطات,Salades,,,سلطة سيزار,Salade César,400,,,MAIN_KITCHEN
+GP-02-04,السلطات,Salades,,,سلطة التونة,Salade au thon,400,,,MAIN_KITCHEN
+GP-02-05,السلطات,Salades,,,سلطة جزائرية,Salade algérienne,300,,,MAIN_KITCHEN
+GP-03-01,الأطباق الرئيسية,Plats principaux,,,لوبيا,Loubia,250,,,MAIN_KITCHEN
+GP-03-02,الأطباق الرئيسية,Plats principaux,,,عدس,Lentilles,250,,,MAIN_KITCHEN
+GP-03-03,الأطباق الرئيسية,Plats principaux,,,أرز,Riz,250,,,MAIN_KITCHEN
+GP-03-04,الأطباق الرئيسية,Plats principaux,,,أرز بالزبيب,Riz aux raisins secs,300,,,MAIN_KITCHEN
+GP-03-05,الأطباق الرئيسية,Plats principaux,,,بولي فارسي,Poulet farci,550,,,MAIN_KITCHEN
+GP-03-06,الأطباق الرئيسية,Plats principaux,,,إسكالوب بالكريمة,Escalope à la crème,550,,,MAIN_KITCHEN
+GP-03-07,الأطباق الرئيسية,Plats principaux,,,ستيك بالكريمة,Steak à la crème,700,,,MAIN_KITCHEN
+GP-03-08,الأطباق الرئيسية,Plats principaux,,,فخذ دجاج محمّر في الفرن,Cuisse de poulet rôtie au four,300,,,MAIN_KITCHEN
+GP-03-09,الأطباق الرئيسية,Plats principaux,,,بوزلوف,Bouzellouf,1000,,,MAIN_KITCHEN
+GP-03-10,الأطباق الرئيسية,Plats principaux,,,بكبوكة,Bakbouka,800,,,MAIN_KITCHEN
+GP-03-11,الأطباق الرئيسية,Plats principaux,,,مثوم,Mtewem,500,,,MAIN_KITCHEN
+GP-03-12,الأطباق الرئيسية,Plats principaux,,,شطيطحة لحم,Chtitha viande,800,,,MAIN_KITCHEN
+GP-03-13,الأطباق الرئيسية,Plats principaux,,,شطيطحة ديك رومي,Chtitha dinde,700,,,MAIN_KITCHEN
+GP-03-14,الأطباق الرئيسية,Plats principaux,,,شطيطحة دجاج,Chtitha poulet,550,,,MAIN_KITCHEN
+GP-03-15,الأطباق الرئيسية,Plats principaux,,,دجاج مكسيكي,Poulet mexicain,450,,,MAIN_KITCHEN
+GP-03-16,الأطباق الرئيسية,Plats principaux,,,إسكالوب مكسيكي,Escalope mexicaine,450,,,MAIN_KITCHEN
+GP-04-01,الأطباق التقليدية,Plats traditionnels,,,شخشوخة بسكرية,Chakhchoukha Biskria,300,,,MAIN_KITCHEN
+GP-04-02,الأطباق التقليدية,Plats traditionnels,,,شخشوخة قسنطينة,Chakhchoukha Constantinoise,300,,,MAIN_KITCHEN
+GP-04-03,الأطباق التقليدية,Plats traditionnels,,,كسكس سميد,Couscous semoule,300,,,MAIN_KITCHEN
+GP-04-04,الأطباق التقليدية,Plats traditionnels,,,كسكس شعير,Couscous orge,400,,,MAIN_KITCHEN
+GP-04-05,الأطباق التقليدية,Plats traditionnels,,,كسكس بلوط,Couscous glands,500,,,MAIN_KITCHEN
+GP-04-06,الأطباق التقليدية,Plats traditionnels,,,كسكس بالسمك,Couscous au poisson,1200,,,MAIN_KITCHEN
+GP-04-07,الأطباق التقليدية,Plats traditionnels,,,تريدة,Trida,300,,,MAIN_KITCHEN
+GP-04-08,الأطباق التقليدية,Plats traditionnels,,,تليتلي,Tlitli,250,,,MAIN_KITCHEN
+GP-04-09,الأطباق التقليدية,Plats traditionnels,,,رشتة,Rechta,300,,,MAIN_KITCHEN
+GP-04-10,الأطباق التقليدية,Plats traditionnels,,,المسفوف,Mesfouf,350,,,MAIN_KITCHEN
+GP-04-11,الأطباق التقليدية,Plats traditionnels,,,الدوبارة,Dobara,350,,,MAIN_KITCHEN
+GP-04-12,الأطباق التقليدية,Plats traditionnels,,,طاجين حلو,Tajine Hlou,600,,,MAIN_KITCHEN
+GP-05-01,المشاوي واللحوم,Grillades & Viandes,,,أنتركوت,Entrecôte,900,,,GRILL
+GP-05-02,المشاوي واللحوم,Grillades & Viandes,,,نوزات,Noisette,600,,,GRILL
+GP-05-03,المشاوي واللحوم,Grillades & Viandes,,,كوطلات,Côtelettes,600,,,GRILL
+GP-05-04,المشاوي واللحوم,Grillades & Viandes,,,إسكالوب,Escalope grillée,350,,,GRILL
+GP-05-05,المشاوي واللحوم,Grillades & Viandes,,,إسكالوب ماريني,Escalope marinée,400,,,GRILL
+GP-05-06,المشاوي واللحوم,Grillades & Viandes,,,فياند هاشي,Viande hachée,200,,,GRILL
+GP-06-01,البروشتات,Brochettes,,,شيش كباب,Chiche Kebab,80,,,GRILL
+GP-06-02,البروشتات,Brochettes,,,ملفوف,Melfouf,80,,,GRILL
+GP-06-03,البروشتات,Brochettes,,,إسكالوب رويال,Brochette Escalope Royale,80,,,GRILL
+GP-06-04,البروشتات,Brochettes,,,إسكالوب ماريني,Brochette Escalope Marinée,50,,,GRILL
+GP-06-05,البروشتات,Brochettes,,,مرقاز,Merguez,80,,,GRILL
+GP-06-06,البروشتات,Brochettes,,,بروشات كبدة بقر,Brochette foie de bœuf,150,,,GRILL
+GP-06-07,البروشتات,Brochettes,,,بروشات كبدة خروف,Brochette foie d’agneau,250,,,GRILL
+GP-07-01,البيتزا,Pizzas,,,مارغريتا,Margherita,350,350,700,MAIN_KITCHEN
+GP-07-02,البيتزا,Pizzas,,,تونة,Thon,400,400,800,MAIN_KITCHEN
+GP-07-03,البيتزا,Pizzas,,,دجاج,Poulet,400,400,800,MAIN_KITCHEN
+GP-07-04,البيتزا,Pizzas,,,لحم,Viande,500,500,1000,MAIN_KITCHEN
+GP-07-05,البيتزا,Pizzas,,,ثلاثة أجبان,3 Fromages,600,600,1100,MAIN_KITCHEN
+GP-07-06,البيتزا,Pizzas,,,أربعة فصول,4 Saisons,800,800,1500,MAIN_KITCHEN
+GP-07-07,البيتزا,Pizzas,,,خضروات,Végétarienne,600,600,1100,MAIN_KITCHEN
+GP-07-08,البيتزا,Pizzas,,,دجاج مدخن,Poulet fumé,500,500,1000,MAIN_KITCHEN
+GP-07-09,البيتزا,Pizzas,,,لحم مدخن,Viande fumée,600,600,1200,MAIN_KITCHEN
+GP-07-10,البيتزا,Pizzas,,,رويال,Royale,1000,1000,2000,MAIN_KITCHEN
+GP-08-01,التاكوس,Tacos,,,تاكوس دجاج,Tacos Poulet,400,,,GRILL
+GP-08-02,التاكوس,Tacos,,,تاكوس لحم,Tacos Viande,600,,,GRILL
+GP-08-03,التاكوس,Tacos,,,تاكوس ثلاثة أجبان,Tacos 3 Fromages,600,,,GRILL
+GP-09-01,الكالزوني,Calzones,,,كالزوني دجاج,Calzone Poulet,500,,,MAIN_KITCHEN
+GP-09-02,الكالزوني,Calzones,,,كالزوني لحم,Calzone Viande,600,,,MAIN_KITCHEN
+GP-09-03,الكالزوني,Calzones,,,كالزوني ثلاثة أجبان,Calzone 3 Fromages,600,,,MAIN_KITCHEN
+GP-10-01,المأكولات البحرية,Fruits de mer,,,بايلا,Paella,2000,,,GRILL
+GP-10-02,المأكولات البحرية,Fruits de mer,,,سلمون مشوي,Saumon grillé,2500,,,GRILL
+GP-10-03,المأكولات البحرية,Fruits de mer,,,سردين مقلي,Sardines frites,450,,,GRILL
+GP-10-04,المأكولات البحرية,Fruits de mer,,,روجي,Rouget,1000,,,GRILL
+GP-10-05,المأكولات البحرية,Fruits de mer,,,دوراد مشوي,Dorade grillée,1000,,,GRILL
+GP-10-06,المأكولات البحرية,Fruits de mer,,,سبادون,Espadon,2200,,,GRILL
+GP-10-07,المأكولات البحرية,Fruits de mer,,,كروفيت مشوي,Crevettes grillées,2300,,,GRILL
+GP-10-08,المأكولات البحرية,Fruits de mer,,,كلامار مشوي,Calamars grillés,2500,,,GRILL
+GP-10-09,المأكولات البحرية,Fruits de mer,,,فواكه البحر بالصلصة,Fruits de mer en sauce,2300,,,GRILL
+GP-10-10,المأكولات البحرية,Fruits de mer,,,مشكل سمك لشخص,Assiette poisson 1 personne,1600,,,GRILL
+GP-10-11,المأكولات البحرية,Fruits de mer,,,مشكل سمك لشخصين,Plateau poisson 2 personnes,3600,,,GRILL
+GP-10-12,المأكولات البحرية,Fruits de mer,,,مشكل سمك لأربعة أشخاص,Plateau poisson 4 personnes,9500,,,GRILL
+GP-11-01,الحلويات,Desserts,,,موس الشوكولاتة,Mousse au chocolat,300,,,DESSERT
+GP-11-02,الحلويات,Desserts,,,سلطة فواكه,Salade de fruits,400,,,DESSERT
+GP-11-03,الحلويات,Desserts,,,فلان كراميل,Flan caramel,200,,,DESSERT
+GP-11-04,الحلويات,Desserts,,,دلاع,Pastèque,200,,,DESSERT
+GP-11-05,الحلويات,Desserts,,,بطيخ,Melon,200,,,DESSERT
+GP-11-06,الحلويات,Desserts,,,تيراميسو,Tiramisu,300,,,DESSERT
+GP-11-07,الحلويات,Desserts,,,كريم بروليه,Crème brûlée,300,,,DESSERT
+GP-12-01,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,كوكا كولا,Coca-Cola,80,,,DRINKS
+GP-12-02,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,حمود 33 سل,Hamoud 33cl,70,,,DRINKS
+GP-12-03,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,حمود 25 سل,Hamoud 25cl,40,,,DRINKS
+GP-12-04,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,حمود 1 لتر,Hamoud 1L,150,,,DRINKS
+GP-12-05,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,كوكا كولا 1 لتر,Coca-Cola 1L,150,,,DRINKS
+GP-12-06,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,عصير إفروي,Jus Ifri,80,,,DRINKS
+GP-12-07,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,عصير 1 لتر,Jus 1L,200,,,DRINKS
+GP-12-08,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,علبة كوكا كولا,Canette Coca-Cola,100,,,DRINKS
+GP-12-09,المشروبات,Boissons,المشروبات الجاهزة,Boissons industrielles,علبة حمود بوعلام,Canette Hamoud Boualem,80,,,DRINKS
+GP-12-10,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير الليمون,Jus de citron,200,,,DRINKS
+GP-12-11,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير البرتقال,Jus d’orange,250,,,DRINKS
+GP-12-12,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير الرمان,Jus de grenade,250,,,DRINKS
+GP-12-13,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير كوكتال,Cocktail de fruits,400,,,DRINKS
+GP-12-14,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير البطيخ,Jus de melon,150,,,DRINKS
+GP-12-15,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير الدلاع,Jus de pastèque,150,,,DRINKS
+GP-12-16,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,عصير الموز,Jus de banane,300,,,DRINKS
+GP-12-17,المشروبات,Boissons,العصائر الطبيعية,Jus naturels,موهيتو,Mojito,300,,,DRINKS

@@ -6,6 +6,7 @@ import {
   PRODUCTION_DB_FILENAME,
   getLocalDatabasePath,
 } from './sqlitePath.ts';
+import { assertNoDatabaseConflict, getSchemaVersion } from './migrationManager.ts';
 
 export const EXPECTED_PRODUCTION_TABLES = [
   'audit_logs',
@@ -17,6 +18,7 @@ export const EXPECTED_PRODUCTION_TABLES = [
   'expenses',
   'ingredients',
   'inventory_movements',
+  'menu_import_history',
   'order_items',
   'orders',
   'payments',
@@ -42,7 +44,10 @@ export const ZERO_COUNT_REQUIRED_TABLES = [
   'users',
   'customers',
   'products',
+  'product_variants',
+  'product_addons',
   'categories',
+  'menu_import_history',
   'restaurant_tables',
   'ingredients',
   'orders',
@@ -67,6 +72,7 @@ export interface ProductionDbInitVerification {
   missingTables: string[];
   counts: Record<string, number>;
   allInitialCountsZero: boolean;
+  schemaVersion: number;
   fileModeOctal: string | null;
 }
 
@@ -114,6 +120,9 @@ export async function initializeFreshProductionDatabase(
     fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   }
 
+  // Enforce multi-DB conflict stop guard before creating or touching any production DB
+  assertNoDatabaseConflict(resolvedPath, { isProductionMode: true });
+
   // Never overwrite or reset an existing populated database
   if (fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).size > 0) {
     const probe = new Database(resolvedPath, { readonly: true, fileMustExist: true });
@@ -145,7 +154,6 @@ export async function initializeFreshProductionDatabase(
   try {
     const {
       configureSqlitePragmas,
-      ensureBaseSchema,
       runSafeMigrations,
       applyDatabaseFilePermissions,
     } = await import('./index.ts');
@@ -153,8 +161,8 @@ export async function initializeFreshProductionDatabase(
     prodDb = new Database(resolvedPath);
     applyDatabaseFilePermissions(resolvedPath);
     configureSqlitePragmas(prodDb);
-    ensureBaseSchema(prodDb);
-    runSafeMigrations(prodDb);
+    runSafeMigrations(prodDb, { dbPath: resolvedPath, backupDir });
+    const schemaVersion = getSchemaVersion(prodDb);
 
     const journalRow = prodDb.pragma('journal_mode') as { journal_mode: string }[];
     const journalMode = String(journalRow?.[0]?.journal_mode || '').toLowerCase();
@@ -216,6 +224,7 @@ export async function initializeFreshProductionDatabase(
       missingTables,
       counts,
       allInitialCountsZero,
+      schemaVersion,
       fileModeOctal,
     };
   } finally {

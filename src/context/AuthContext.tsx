@@ -117,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const hasRole = (roles: Role[]) => {
     if (!user) return false;
-    if (user.role === 'ADMIN') return true;
+    if (user.role === 'ADMIN' || user.role === 'OWNER') return true;
     return roles.includes(user.role);
   };
 
@@ -133,11 +133,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         lockTerminal,
         hasRole,
-        isAdmin: user?.role === 'ADMIN',
-        isManager: user?.role === 'MANAGER' || user?.role === 'ADMIN',
-        isCashier: user?.role === 'CASHIER' || user?.role === 'ADMIN' || user?.role === 'MANAGER',
-        isKitchen: user?.role === 'KITCHEN' || user?.role === 'ADMIN',
-        isInventory: user?.role === 'INVENTORY' || user?.role === 'ADMIN' || user?.role === 'MANAGER',
+        isAdmin: user?.role === 'ADMIN' || user?.role === 'OWNER',
+        isManager: user?.role === 'MANAGER' || user?.role === 'ADMIN' || user?.role === 'OWNER',
+        isCashier: user?.role === 'CASHIER' || user?.role === 'ADMIN' || user?.role === 'OWNER' || user?.role === 'MANAGER',
+        isKitchen: user?.role === 'KITCHEN' || user?.role === 'ADMIN' || user?.role === 'OWNER',
+        isInventory: user?.role === 'INVENTORY' || user?.role === 'ADMIN' || user?.role === 'OWNER' || user?.role === 'MANAGER',
       }}
     >
       {children}

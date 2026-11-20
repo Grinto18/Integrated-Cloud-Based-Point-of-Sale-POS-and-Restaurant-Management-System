@@ -83,11 +83,13 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
     refreshDashboard,
     refreshHeldOrders,
     refreshOfflineCount,
+    catalogVersion,
   } = usePos();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | 'ALL'>('ALL');
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCartItemId, setSelectedCartItemId] = useState<string | null>(null);
 
@@ -143,7 +145,7 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [catalogVersion]);
 
   const loadData = async () => {
     try {
@@ -160,14 +162,30 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
     }
   };
 
+  const availableSubcategories = React.useMemo(() => {
+    if (selectedCategoryId === 'ALL') return [];
+    const seen = new Map<string, string | null>();
+    for (const p of products) {
+      if (p.categoryId === selectedCategoryId && p.subcategoryAr) {
+        if (!seen.has(p.subcategoryAr)) {
+          seen.set(p.subcategoryAr, p.subcategoryFr || null);
+        }
+      }
+    }
+    return Array.from(seen.entries()).map(([ar, fr]) => ({ ar, fr }));
+  }, [products, selectedCategoryId]);
+
   const filteredProducts = products.filter((p) => {
     const matchesCategory = selectedCategoryId === 'ALL' || p.categoryId === selectedCategoryId;
+    const matchesSubcategory =
+      selectedSubcategory === 'ALL' || !p.subcategoryAr || p.subcategoryAr === selectedSubcategory;
     const matchesSearch =
       searchQuery.trim() === '' ||
       p.nameAr.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.nameFr && p.nameFr.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (p.subcategoryAr && p.subcategoryAr.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (p.barcode && p.barcode.includes(searchQuery.trim()));
-    return matchesCategory && matchesSearch;
+    return matchesCategory && matchesSubcategory && matchesSearch;
   });
 
   const handleProductClick = (product: Product) => {
@@ -845,7 +863,10 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0 py-0.5 smooth-scroll">
           <button
             type="button"
-            onClick={() => setSelectedCategoryId('ALL')}
+            onClick={() => {
+              setSelectedCategoryId('ALL');
+              setSelectedSubcategory('ALL');
+            }}
             className={`px-4 py-2 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition active:scale-95 shrink-0 cursor-pointer ${
               selectedCategoryId === 'ALL'
                 ? 'bg-[#C6A15B] text-[#171717] shadow'
@@ -862,7 +883,10 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
               <button
                 key={cat.id}
                 type="button"
-                onClick={() => setSelectedCategoryId(cat.id)}
+                onClick={() => {
+                  setSelectedCategoryId(cat.id);
+                  setSelectedSubcategory('ALL');
+                }}
                 className={`px-3.5 py-2 rounded-xl font-black text-xs sm:text-sm flex items-center gap-1.5 transition active:scale-95 shrink-0 cursor-pointer ${
                   isSelected
                     ? 'bg-[#C6A15B] text-[#171717] shadow'
@@ -877,6 +901,37 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
             );
           })}
         </div>
+
+        {/* Subcategories Filter Bar (e.g., Drinks: Industrial vs Natural Juices) */}
+        {availableSubcategories.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0 pb-0.5">
+            <button
+              type="button"
+              onClick={() => setSelectedSubcategory('ALL')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0 cursor-pointer border ${
+                selectedSubcategory === 'ALL'
+                  ? 'bg-[#C6A15B]/20 text-[#C6A15B] border-[#C6A15B]'
+                  : 'bg-[#1D1D1D] text-[#A8A29E] border-[#33302B] hover:text-[#F7F3EA]'
+              }`}
+            >
+              {t('جميع الأنواع', 'Toutes sous-catégories')}
+            </button>
+            {availableSubcategories.map((sub) => (
+              <button
+                key={sub.ar}
+                type="button"
+                onClick={() => setSelectedSubcategory(sub.ar)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0 cursor-pointer border ${
+                  selectedSubcategory === sub.ar
+                    ? 'bg-[#C6A15B]/20 text-[#C6A15B] border-[#C6A15B]'
+                    : 'bg-[#1D1D1D] text-[#A8A29E] border-[#33302B] hover:text-[#F7F3EA]'
+                }`}
+              >
+                {lang === 'fr' && sub.fr ? sub.fr : sub.ar}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Products Grid */}
         <div className="flex-1 overflow-y-auto no-scrollbar min-h-0 smooth-scroll">
@@ -1019,7 +1074,10 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
                 <div className="grid grid-cols-2 gap-2.5">
                   {activeProductForOptions.variants.map((v) => {
                     const isSelected = selectedVariant?.id === v.id;
-                    const fullPrice = Number(activeProductForOptions.price) + Number(v.priceAdjustment);
+                    const fullPrice =
+                      v.price !== null && v.price !== undefined
+                        ? Number(v.price)
+                        : Number(activeProductForOptions.price) + Number(v.priceAdjustment);
                     return (
                       <button
                         key={v.id}
@@ -1075,9 +1133,13 @@ export const PosTerminal: React.FC<PosTerminalProps> = ({
             )}
 
             {(() => {
+              const variantBase =
+                selectedVariant && selectedVariant.price !== null && selectedVariant.price !== undefined
+                  ? Number(selectedVariant.price)
+                  : Number(activeProductForOptions.price) +
+                    (selectedVariant ? Number(selectedVariant.priceAdjustment) : 0);
               const computedTotal =
-                Number(activeProductForOptions.price) +
-                (selectedVariant ? Number(selectedVariant.priceAdjustment) : 0) +
+                variantBase +
                 selectedAddons.reduce((sum, a) => sum + Number(a.price), 0);
               return (
                 <button

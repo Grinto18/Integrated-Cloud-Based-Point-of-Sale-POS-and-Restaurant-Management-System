@@ -1,16 +1,41 @@
 import 'dotenv/config';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import bcrypt from 'bcryptjs';
 import * as schema from './schema.ts';
-import { getLocalDatabasePath } from './sqlitePath.ts';
+import { getBackupDirectory, getLocalDatabasePath } from './sqlitePath.ts';
+import {
+  assertNoDatabaseConflict,
+  runVersionedMigrations,
+  verifyDatabaseIntegrity,
+  getSchemaVersion,
+  LATEST_SCHEMA_VERSION,
+  DatabaseConflictError,
+  DatabaseMigrationError,
+  type MigrationRunResult,
+} from './migrationManager.ts';
 import fs from 'fs';
 import path from 'path';
+
+export {
+  assertNoDatabaseConflict,
+  runVersionedMigrations,
+  verifyDatabaseIntegrity,
+  getSchemaVersion,
+  LATEST_SCHEMA_VERSION,
+  DatabaseConflictError,
+  DatabaseMigrationError,
+  type MigrationRunResult,
+};
 
 const dbPath = getLocalDatabasePath();
 const dir = path.dirname(dbPath);
 if (!fs.existsSync(dir)) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
+
+// Mandatory Phase 1 Multi-DB Conflict Stop Guard before opening or creating any SQLite file
+assertNoDatabaseConflict(dbPath);
 
 export function applyDatabaseFilePermissions(targetPath: string): void {
   try {
@@ -395,12 +420,27 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status ON sync_conflicts(status);
+
+CREATE TABLE IF NOT EXISTS menu_import_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL,
+  file_format TEXT NOT NULL,
+  categories_count INTEGER NOT NULL DEFAULT 0,
+  products_count INTEGER NOT NULL DEFAULT 0,
+  variants_count INTEGER NOT NULL DEFAULT 0,
+  valid_count INTEGER NOT NULL DEFAULT 0,
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
+  invalid_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'COMPLETED',
+  backup_filename TEXT,
+  backup_path TEXT,
+  summary_json TEXT,
+  imported_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_menu_import_history_created ON menu_import_history(created_at);
 `);
 }
-
-ensureBaseSchema(sqlite);
-
-import bcrypt from 'bcryptjs';
 
 const BCRYPT_HASH_REGEX = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 
@@ -408,142 +448,64 @@ export function isBcryptHash(value: string | null | undefined): boolean {
   return typeof value === 'string' && BCRYPT_HASH_REGEX.test(value);
 }
 
-export function migratePlaintextPins(): number {
+export function migratePlaintextPins(targetDb: Database.Database = sqlite): number {
   let migratedCount = 0;
-  try {
-    const rows = sqlite
-      .prepare('SELECT id, pin FROM users WHERE pin IS NOT NULL')
-      .all() as { id: number; pin: string }[];
+  const hasUsersTable = Boolean(
+    targetDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()
+  );
+  if (!hasUsersTable) return 0;
 
-    const toMigrate = rows.filter((r) => {
-      const trimmed = typeof r.pin === 'string' ? r.pin.trim() : '';
-      return trimmed.length > 0 && !isBcryptHash(trimmed);
-    });
+  const rows = targetDb
+    .prepare('SELECT id, pin FROM users WHERE pin IS NOT NULL')
+    .all() as { id: number; pin: string }[];
 
-    if (toMigrate.length === 0) return 0;
+  const toMigrate = rows.filter((r) => {
+    const trimmed = typeof r.pin === 'string' ? r.pin.trim() : '';
+    return trimmed.length > 0 && !isBcryptHash(trimmed);
+  });
 
-    const updateStmt = sqlite.prepare('UPDATE users SET pin = ? WHERE id = ?');
-    const runTx = sqlite.transaction((entries: { id: number; pin: string }[]) => {
-      for (const entry of entries) {
-        const hashedPin = bcrypt.hashSync(entry.pin.trim(), 10);
-        updateStmt.run(hashedPin, entry.id);
-        migratedCount++;
-      }
-    });
-    runTx(toMigrate);
-  } catch (err: any) {
-    console.error('PIN migration note:', err?.message || 'failed');
-  }
+  if (toMigrate.length === 0) return 0;
+
+  const updateStmt = targetDb.prepare('UPDATE users SET pin = ? WHERE id = ?');
+  const runTx = targetDb.transaction((entries: { id: number; pin: string }[]) => {
+    for (const entry of entries) {
+      const hashedPin = bcrypt.hashSync(entry.pin.trim(), 10);
+      updateStmt.run(hashedPin, entry.id);
+      migratedCount++;
+    }
+  });
+  runTx(toMigrate);
   return migratedCount;
 }
 
-function ensureColumnExistsOn(
-  targetDb: Database.Database,
-  tableName: string,
-  columnName: string,
-  columnDef: string
-) {
-  try {
-    const tableInfo = targetDb.pragma(`table_info(${tableName})`) as any[];
-    if (!tableInfo || tableInfo.length === 0) return;
-    const exists = tableInfo.some((col: any) => col.name === columnName);
-    if (!exists) {
-      targetDb.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef};`);
-    }
-  } catch {
-    // Ignore non-fatal legacy column check errors
-  }
+let lastMigrationResult: MigrationRunResult | null = null;
+
+export function getLastMigrationResult(): MigrationRunResult | null {
+  return lastMigrationResult;
 }
 
-export function runSafeMigrations(targetDb: Database.Database = sqlite): void {
-  // Core Phase 03-06 backward-compatible column additions
-  ensureColumnExistsOn(targetDb, 'users', 'phone', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'users', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
-  ensureColumnExistsOn(targetDb, 'suppliers', 'email', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'suppliers', 'notes', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'cash_shifts', 'total_cash_in', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'cash_shifts', 'total_cash_out', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'cash_shifts', 'total_baridimob_sales', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'cash_movements', 'performed_by', 'INTEGER REFERENCES users(id)');
-  ensureColumnExistsOn(targetDb, 'ingredients', 'max_stock', 'NUMERIC');
-  ensureColumnExistsOn(targetDb, 'waste_records', 'product_id', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'purchases', 'paid_amount', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'purchases', 'payment_status', "TEXT NOT NULL DEFAULT 'PAID'");
-  ensureColumnExistsOn(targetDb, 'inventory_movements', 'cost', 'NUMERIC');
-  ensureColumnExistsOn(targetDb, 'deliveries', 'customer_id', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'deliveries', 'delivery_address', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'deliveries', 'notes', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'expenses', 'date', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'expenses', 'user_id', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'audit_logs', 'entity_type', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'orders', 'idempotency_key', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'orders', 'offline_id', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'orders', 'shift_id', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'orders', 'tax_rate', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'orders', 'tax_amount', 'NUMERIC NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'payments', 'shift_id', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'payments', 'idempotency_key', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'cash_movements', 'idempotency_key', 'TEXT');
-
-  // Reconcile print_jobs legacy camelCase columns to schema.ts snake_case columns safely (non-destructive)
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'order_number', "TEXT NOT NULL DEFAULT ''");
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'job_type', "TEXT NOT NULL DEFAULT 'RECEIPT'");
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'printer_name', "TEXT NOT NULL DEFAULT 'CAFETERIA'");
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'connection_type', "TEXT NOT NULL DEFAULT 'WINDOWS_SPOOLER'");
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'target_ip', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'target_port', 'INTEGER DEFAULT 9100');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'paper_width', "TEXT NOT NULL DEFAULT '80mm'");
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'error_message', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'is_reprint', 'INTEGER NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'job_key', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'attempts', 'INTEGER NOT NULL DEFAULT 1');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'requested_by', 'INTEGER');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'spooler_accepted', 'INTEGER NOT NULL DEFAULT 0');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'confirmed_at', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'updated_at', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'payload_preview', 'TEXT');
-  ensureColumnExistsOn(targetDb, 'print_jobs', 'created_at', 'TEXT');
-
-  try {
-    const pjCols = (targetDb.pragma('table_info(print_jobs)') as any[]).map((c) => c.name);
-    if (pjCols.includes('orderNumber')) {
-      targetDb.exec(`
-        UPDATE print_jobs
-        SET
-          order_number = CASE WHEN COALESCE(order_number, '') = '' THEN COALESCE(orderNumber, '') ELSE order_number END,
-          job_type = CASE WHEN COALESCE(job_type, '') = '' OR job_type = 'RECEIPT' THEN COALESCE(jobType, 'RECEIPT') ELSE job_type END,
-          printer_name = CASE WHEN COALESCE(printer_name, '') = '' OR printer_name = 'CAFETERIA' THEN COALESCE(printerName, 'CAFETERIA') ELSE printer_name END,
-          paper_width = CASE WHEN COALESCE(paper_width, '') = '' OR paper_width = '80mm' THEN COALESCE(paperWidth, '80mm') ELSE paper_width END,
-          error_message = COALESCE(error_message, errorMessage),
-          is_reprint = COALESCE(NULLIF(is_reprint, 0), isReprint, 0),
-          created_at = COALESCE(created_at, createdAt, datetime('now'))
-        WHERE order_number = '' OR created_at IS NULL OR (printer_name = 'CAFETERIA' AND COALESCE(printerName, 'CAFETERIA') != 'CAFETERIA');
-      `);
-    }
-  } catch {
-    // Ignore if print_jobs has no legacy camelCase columns
+export function runSafeMigrations(
+  targetDb: Database.Database = sqlite,
+  options: { dbPath?: string; backupDir?: string } = {}
+): MigrationRunResult {
+  const resolvedDbPath = options.dbPath || targetDb.name || dbPath;
+  const resolvedBackupDir = options.backupDir || getBackupDirectory();
+  const result = runVersionedMigrations(targetDb, {
+    dbPath: resolvedDbPath,
+    backupDir: resolvedBackupDir,
+    ensureBaseSchema,
+  });
+  if (targetDb === sqlite) {
+    lastMigrationResult = result;
   }
-
-  // Enforce offline_id, cash_movements idempotency_key, and original print job_key uniqueness
-  try {
-    targetDb.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_offline_id_unique ON orders(offline_id) WHERE offline_id IS NOT NULL;'
-    );
-    targetDb.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_movements_idempotency_unique ON cash_movements(idempotency_key) WHERE idempotency_key IS NOT NULL;'
-    );
-    targetDb.exec(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_print_jobs_orig_key_unique ON print_jobs(job_key) WHERE job_key IS NOT NULL AND is_reprint = 0;'
-    );
-  } catch {
-    // Ignore if legacy duplicate rows exist
-  }
+  return result;
 }
 
-runSafeMigrations(sqlite);
+// Run versioned, integrity-verified migrations on startup (creates PRE_MIGRATION backup if populated)
+lastMigrationResult = runSafeMigrations(sqlite, { dbPath, backupDir: getBackupDirectory() });
 
 // Safely migrate any legacy plaintext PINs to bcrypt hashes at startup without locking out users
-migratePlaintextPins();
+migratePlaintextPins(sqlite);
 
 export let db = drizzle(sqlite, { schema });
 
@@ -569,12 +531,15 @@ export function reopenDatabase(customPath?: string): Database.Database {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
   }
+  assertNoDatabaseConflict(targetPath);
   sqlite = new Database(targetPath);
   applyDatabaseFilePermissions(targetPath);
   configureSqlitePragmas(sqlite);
-  ensureBaseSchema(sqlite);
-  runSafeMigrations(sqlite);
-  migratePlaintextPins();
+  lastMigrationResult = runSafeMigrations(sqlite, {
+    dbPath: targetPath,
+    backupDir: getBackupDirectory(),
+  });
+  migratePlaintextPins(sqlite);
   db = drizzle(sqlite, { schema });
   return sqlite;
 }

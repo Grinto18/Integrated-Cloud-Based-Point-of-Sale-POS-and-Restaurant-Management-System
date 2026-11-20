@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { eq, desc, asc, and, sql, inArray, isNotNull } from 'drizzle-orm';
-import { db, sqlite, isBcryptHash } from '../db/index.ts';
+import { db, sqlite, isBcryptHash, getSchemaVersion } from '../db/index.ts';
 import {
   users,
   categories,
@@ -40,7 +40,7 @@ import {
   revokeToken,
   hashPin,
   verifyPin,
-  AuthRequest,
+  type AuthRequest,
 } from '../middleware/auth.ts';
 import {
   LOGIN_RATE_LIMIT,
@@ -52,22 +52,94 @@ import {
 } from '../middleware/rateLimit.ts';
 import { logAudit } from '../utils/audit.ts';
 import { sanitizeErrorMessage } from '../utils/redact.ts';
-import { backupManager, BackupKind } from '../services/backupService.ts';
+import {
+  parsePositiveInt,
+  parseFiniteNonNegative,
+  parseFinitePositive,
+  logStructuredError,
+  apiNotFoundHandler,
+  apiErrorHandler,
+} from '../middleware/errorHandler.ts';
+import { backupManager, type BackupKind } from '../services/backupService.ts';
 import { getBackupDirectory } from '../db/sqlitePath.ts';
 import {
   enumerateSystemPrinters,
   createAndProcessPrintJob,
   retryExistingPrintJob,
   runLivePrinterTest,
+  readFullPrintPayload,
+  resolveDeliveryState,
 } from '../services/printQueueService.ts';
 import {
   getDesktopRuntimeStatus,
   prepareSafeApplicationUpdate,
   runFirstRunDatabaseAudit,
 } from '../services/desktopLifecycle.ts';
+import {
+  previewMenuImport,
+  commitMenuImport,
+  listMenuImportHistory,
+} from '../services/menuImportService.ts';
 import type { PrinterConnectionType, ArabicEscPosEncoding } from '../types.ts';
 
-const ALLOWED_ROLES = new Set(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN', 'INVENTORY']);
+const ALLOWED_ROLES = new Set(['OWNER', 'ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN', 'INVENTORY']);
+
+const WEAK_PASSWORDS = new Set([
+  'password',
+  'password1',
+  'password123',
+  '12345678',
+  '123456789',
+  '1234567890',
+  '87654321',
+  'admin123',
+  'admin1234',
+  'administrator',
+  'manager123',
+  'cashier123',
+  'waiter123',
+  'kitchen123',
+  'inventory123',
+  'qwerty123',
+  'qwertyui',
+  'azerty123',
+  'goldenpalace',
+  'letmein1',
+  'welcome1',
+]);
+
+export function validatePasswordStrength(
+  rawPassword: unknown,
+  username?: string
+): { valid: true } | { valid: false; error: string } {
+  if (typeof rawPassword !== 'string') {
+    return {
+      valid: false,
+      error: 'كلمة المرور يجب أن تتكون من 8 أحرف على الأقل',
+    };
+  }
+  const trimmed = rawPassword.trim();
+  if (rawPassword.length < 8 || trimmed.length < 8) {
+    return {
+      valid: false,
+      error: 'كلمة المرور يجب أن تتكون من 8 أحرف فعلية على الأقل',
+    };
+  }
+  const normalized = trimmed.toLowerCase();
+  if (WEAK_PASSWORDS.has(normalized) || /^(.)\1+$/.test(trimmed)) {
+    return {
+      valid: false,
+      error: 'كلمة المرور ضعيفة جداً أو شائعة. يرجى اختيار كلمة مرور أقوى.',
+    };
+  }
+  if (username && normalized === username.trim().toLowerCase()) {
+    return {
+      valid: false,
+      error: 'لا يمكن أن تكون كلمة المرور مطابقة لاسم المستخدم',
+    };
+  }
+  return { valid: true };
+}
 
 export const apiRouter = express.Router();
 
@@ -75,13 +147,20 @@ apiRouter.get('/health', (_req, res) => {
   const nowIso = new Date().toISOString();
   try {
     sqlite.prepare('SELECT 1 as ok').get();
+    const schemaVersion = getSchemaVersion(sqlite);
     res.json({
       status: 'ok',
       db: 'connected',
+      schemaVersion,
+      restaurant: 'GOLDEN PALACE POS - القصر الذهبي',
+      branch: 'عند الجيجلي • حسين داي',
+      phone: '0791755614',
+      desktopMode: process.env.GOLDEN_PALACE_DESKTOP === '1',
       time: nowIso,
       timestamp: nowIso,
     });
   } catch (err: any) {
+    logStructuredError('HEALTH_CHECK_FAILED', err);
     res.status(503).json({
       status: 'degraded',
       db: 'unavailable',
@@ -352,6 +431,11 @@ apiRouter.post('/users', requireAuth, requireRole(['ADMIN']), async (req: AuthRe
       return res.status(400).json({ error: 'الدور الوظيفي المحدد غير صالح' });
     }
 
+    const passwordCheck = validatePasswordStrength(password, String(username).trim());
+    if (!passwordCheck.valid) {
+      return res.status(400).json({ error: passwordCheck.error });
+    }
+
     let hashedPin: string | null = null;
     if (typeof pin === 'string' && pin.trim().length > 0) {
       const trimmedPin = pin.trim();
@@ -493,7 +577,11 @@ apiRouter.put('/users/:id', requireAuth, requireRole(['ADMIN']), async (req: Aut
       }
     }
 
-    if (typeof password === 'string' && password.trim()) {
+    if (password !== undefined && password !== null && String(password) !== '') {
+      const passwordCheck = validatePasswordStrength(password, existingUser.username);
+      if (!passwordCheck.valid) {
+        return res.status(400).json({ error: passwordCheck.error });
+      }
       const salt = bcrypt.genSaltSync(10);
       updateData.passwordHash = bcrypt.hashSync(password, salt);
     }
@@ -623,7 +711,10 @@ apiRouter.put('/categories/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']),
 
 apiRouter.delete('/categories/:id', requireAuth, requireRole(['ADMIN']), async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
+    const id = parsePositiveInt(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ error: 'معرف الفئة غير صالح' });
+    }
     const existing = await db.select().from(categories).where(eq(categories.id, id));
     if (existing.length === 0) {
       return res.status(404).json({ error: 'الفئة غير موجودة' });
@@ -666,11 +757,23 @@ apiRouter.get('/products', requireAuth, async (_req, res) => {
       .from(productRecipes)
       .leftJoin(ingredients, eq(productRecipes.ingredientId, ingredients.id));
 
-    // Group variants, addons & enriched recipes by product
+    // Group active variants, product+global active addons & enriched recipes by product
+    const activeGlobalAddons = addons.filter((a) => a.productId === null && a.isActive !== false);
     const fullProducts = prods.map((p) => ({
       ...p,
-      variants: variants.filter((v) => v.productId === p.id),
-      addons: addons.filter((a) => a.productId === p.id),
+      variants: variants
+        .filter((v) => v.productId === p.id && v.isActive !== false)
+        .map((v) => ({
+          ...v,
+          price:
+            v.price !== null && v.price !== undefined
+              ? Number(v.price)
+              : Number(p.price) + Number(v.priceAdjustment || 0),
+        })),
+      addons: [
+        ...addons.filter((a) => a.productId === p.id && a.isActive !== false),
+        ...activeGlobalAddons,
+      ],
       recipes: recipesWithIngredients.filter((r) => r.productId === p.id),
     }));
 
@@ -723,12 +826,16 @@ apiRouter.post('/products', requireAuth, requireRole(['ADMIN', 'MANAGER']), asyn
         nameAr: String(nameAr).trim(),
         nameFr: nameFr || null,
         nameEn: nameEn || null,
+        sku: req.body.sku ? String(req.body.sku).trim() : null,
+        subcategoryAr: req.body.subcategoryAr ? String(req.body.subcategoryAr).trim() : null,
+        subcategoryFr: req.body.subcategoryFr ? String(req.body.subcategoryFr).trim() : null,
         description: description || null,
         price: String(numPrice),
         costPrice: String(numCostPrice),
         barcode: barcode || null,
         station: station || 'MAIN_KITCHEN',
         isAvailable: isAvailable !== undefined ? Boolean(isAvailable) : true,
+        isActive: isAvailable !== undefined ? Boolean(isAvailable) : true,
       }).returning().all();
 
       const prodId = inserted[0].id;
@@ -736,13 +843,22 @@ apiRouter.post('/products', requireAuth, requireRole(['ADMIN', 'MANAGER']), asyn
       if (variants && Array.isArray(variants)) {
         for (const v of variants) {
           if (v.nameAr) {
-            const adj = Number(v.priceAdjustment || 0);
+            const explicitPrice =
+              v.price !== undefined && v.price !== null && v.price !== '' ? Number(v.price) : null;
+            if (explicitPrice !== null && (!Number.isFinite(explicitPrice) || explicitPrice < 0)) {
+              throw new Error('سعر الخيار غير صالح');
+            }
+            const adj =
+              explicitPrice !== null ? explicitPrice - numPrice : Number(v.priceAdjustment || 0);
             if (!Number.isFinite(adj)) throw new Error('تعديل سعر الخيار غير صالح');
             tx.insert(productVariants).values({
               productId: prodId,
               nameAr: v.nameAr,
               nameFr: v.nameFr || null,
+              price: explicitPrice !== null ? Math.round(explicitPrice) : Math.round(numPrice + adj),
               priceAdjustment: String(adj),
+              sku: v.sku ? String(v.sku).trim() : null,
+              isActive: true,
             }).run();
           }
         }
@@ -758,6 +874,8 @@ apiRouter.post('/products', requireAuth, requireRole(['ADMIN', 'MANAGER']), asyn
               nameAr: a.nameAr,
               nameFr: a.nameFr || null,
               price: String(addonPrice),
+              isActive: true,
+              createdAt: new Date().toISOString(),
             }).run();
           }
         }
@@ -789,8 +907,8 @@ apiRouter.post('/products', requireAuth, requireRole(['ADMIN', 'MANAGER']), asyn
 
     res.status(201).json(createdProd);
   } catch (error: any) {
-    console.error('Create product error:', sanitizeErrorMessage(error));
-    res.status(500).json({ error: error?.message || 'فشل إضافة الطبق' });
+    logStructuredError('CREATE_PRODUCT', error, req);
+    res.status(500).json({ error: 'فشل إضافة الطبق' });
   }
 });
 
@@ -886,6 +1004,8 @@ apiRouter.put('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), a
           entityType: 'PRODUCT',
           entityId: String(prodId),
           details: `تغيير سعر ${currentProd.nameAr} من ${oldPrice} DA إلى ${newPrice} DA`,
+          previousValue: String(oldPrice),
+          newValue: String(newPrice),
         }).run();
       }
 
@@ -894,12 +1014,22 @@ apiRouter.put('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), a
         nameAr: nameAr ?? currentProd.nameAr,
         nameFr: nameFr ?? currentProd.nameFr,
         nameEn: nameEn ?? currentProd.nameEn,
+        sku: req.body.sku !== undefined ? (req.body.sku ? String(req.body.sku).trim() : null) : currentProd.sku,
+        subcategoryAr:
+          req.body.subcategoryAr !== undefined
+            ? (req.body.subcategoryAr ? String(req.body.subcategoryAr).trim() : null)
+            : currentProd.subcategoryAr,
+        subcategoryFr:
+          req.body.subcategoryFr !== undefined
+            ? (req.body.subcategoryFr ? String(req.body.subcategoryFr).trim() : null)
+            : currentProd.subcategoryFr,
         description: description ?? currentProd.description,
         price: String(newPrice),
         costPrice: nextCostPrice,
         barcode: barcode ?? currentProd.barcode,
         station: station ?? currentProd.station,
         isAvailable: isAvailable !== undefined ? Boolean(isAvailable) : currentProd.isAvailable,
+        isActive: isAvailable !== undefined ? Boolean(isAvailable) : currentProd.isActive,
         updatedAt: new Date().toISOString(),
       }).where(eq(products.id, prodId)).returning().all();
 
@@ -907,11 +1037,18 @@ apiRouter.put('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), a
         tx.delete(productVariants).where(eq(productVariants.productId, prodId)).run();
         for (const v of variants) {
           if (v.nameAr) {
+            const explicitPrice =
+              v.price !== undefined && v.price !== null && v.price !== '' ? Number(v.price) : null;
+            const adj =
+              explicitPrice !== null ? explicitPrice - newPrice : Number(v.priceAdjustment || 0);
             tx.insert(productVariants).values({
               productId: prodId,
               nameAr: v.nameAr,
               nameFr: v.nameFr || null,
-              priceAdjustment: String(Number(v.priceAdjustment || 0)),
+              price: explicitPrice !== null ? Math.round(explicitPrice) : Math.round(newPrice + adj),
+              priceAdjustment: String(adj),
+              sku: v.sku ? String(v.sku).trim() : null,
+              isActive: v.isActive !== undefined ? Boolean(v.isActive) : true,
             }).run();
           }
         }
@@ -926,6 +1063,8 @@ apiRouter.put('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), a
               nameAr: a.nameAr,
               nameFr: a.nameFr || null,
               price: String(Number(a.price || 0)),
+              isActive: a.isActive !== undefined ? Boolean(a.isActive) : true,
+              createdAt: new Date().toISOString(),
             }).run();
           }
         }
@@ -967,7 +1106,8 @@ apiRouter.put('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), a
 // Toggle Product Availability (Fast for Cashier / Kitchen)
 apiRouter.patch('/products/:id/toggle-available', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'KITCHEN']), async (req: AuthRequest, res) => {
   try {
-    const prodId = Number(req.params.id);
+    const prodId = parsePositiveInt(req.params.id);
+    if (prodId === null) return res.status(400).json({ error: 'معرف الطبق غير صالح' });
     const existing = await db.select().from(products).where(eq(products.id, prodId));
     if (existing.length === 0) return res.status(404).json({ error: 'الطبق غير موجود' });
 
@@ -989,10 +1129,213 @@ apiRouter.patch('/products/:id/toggle-available', requireAuth, requireRole(['ADM
   }
 });
 
+// ==========================================
+// 2B. PRODUCT ADD-ONS (Empty by default; Admin-configured global/product extras)
+// ==========================================
+apiRouter.get('/addons', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const includeInactive = req.query.includeInactive === 'true';
+    const allAddons = await db.select().from(productAddons).orderBy(asc(productAddons.id));
+    const result = includeInactive ? allAddons : allAddons.filter((a) => a.isActive !== false);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: 'فشل تحميل قائمة الإضافات' });
+  }
+});
+
+apiRouter.post('/addons', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
+  try {
+    const { productId = null, nameAr, nameFr, price = 0, isActive = true } = req.body;
+    const cleanNameAr = String(nameAr || '').trim();
+    const numPrice = Number(price);
+    if (!cleanNameAr || !Number.isFinite(numPrice) || numPrice < 0 || !Number.isInteger(numPrice)) {
+      return res.status(400).json({ error: 'اسم الإضافة والسعر الصحيح (عدد صحيح >= 0 بالدينار) مطلوبان' });
+    }
+
+    let resolvedProductId: number | null = null;
+    if (productId !== null && productId !== undefined && productId !== '') {
+      const pid = Number(productId);
+      if (!Number.isFinite(pid) || pid <= 0) {
+        return res.status(400).json({ error: 'معرف المنتج المرتبط غير صالح' });
+      }
+      const existingProd = await db.select({ id: products.id }).from(products).where(eq(products.id, pid));
+      if (existingProd.length === 0) {
+        return res.status(404).json({ error: 'المنتج المرتبط غير موجود' });
+      }
+      resolvedProductId = pid;
+    }
+
+    const inserted = await db
+      .insert(productAddons)
+      .values({
+        productId: resolvedProductId,
+        nameAr: cleanNameAr,
+        nameFr: nameFr ? String(nameFr).trim() : null,
+        price: String(numPrice),
+        isActive: Boolean(isActive),
+        createdAt: new Date().toISOString(),
+      })
+      .returning();
+
+    await logAudit({
+      userId: req.user!.id,
+      userName: req.user!.fullName,
+      action: 'CREATE_ADDON',
+      entityType: 'PRODUCT_ADDON',
+      entityId: String(inserted[0].id),
+      details: `إنشاء إضافة جديدة: ${cleanNameAr} بسعر ${numPrice} DA`,
+      newValue: JSON.stringify(inserted[0]),
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json(inserted[0]);
+  } catch (error: any) {
+    console.error('Create addon error:', sanitizeErrorMessage(error));
+    res.status(500).json({ error: 'فشل إنشاء الإضافة' });
+  }
+});
+
+apiRouter.put('/addons/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
+  try {
+    const addonId = Number(req.params.id);
+    if (!Number.isFinite(addonId) || addonId <= 0) {
+      return res.status(400).json({ error: 'معرف الإضافة غير صالح' });
+    }
+    const existing = await db.select().from(productAddons).where(eq(productAddons.id, addonId));
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'الإضافة غير موجودة' });
+    }
+
+    const current = existing[0];
+    const nextNameAr = req.body.nameAr !== undefined ? String(req.body.nameAr).trim() : current.nameAr;
+    const nextPrice = req.body.price !== undefined ? Number(req.body.price) : Number(current.price);
+    if (!nextNameAr || !Number.isFinite(nextPrice) || nextPrice < 0 || !Number.isInteger(nextPrice)) {
+      return res.status(400).json({ error: 'اسم الإضافة والسعر الصحيح (عدد صحيح >= 0) مطلوبان' });
+    }
+
+    const updated = await db
+      .update(productAddons)
+      .set({
+        nameAr: nextNameAr,
+        nameFr: req.body.nameFr !== undefined ? (req.body.nameFr ? String(req.body.nameFr).trim() : null) : current.nameFr,
+        price: String(nextPrice),
+        isActive: req.body.isActive !== undefined ? Boolean(req.body.isActive) : current.isActive,
+      })
+      .where(eq(productAddons.id, addonId))
+      .returning();
+
+    await logAudit({
+      userId: req.user!.id,
+      userName: req.user!.fullName,
+      action: 'UPDATE_ADDON',
+      entityType: 'PRODUCT_ADDON',
+      entityId: String(addonId),
+      details: `تحديث الإضافة: ${nextNameAr} (${nextPrice} DA)`,
+      previousValue: JSON.stringify(current),
+      newValue: JSON.stringify(updated[0]),
+      ipAddress: req.ip,
+    });
+
+    res.json(updated[0]);
+  } catch (error: any) {
+    res.status(500).json({ error: 'فشل تحديث الإضافة' });
+  }
+});
+
+apiRouter.delete('/addons/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
+  try {
+    const addonId = Number(req.params.id);
+    if (!Number.isFinite(addonId) || addonId <= 0) {
+      return res.status(400).json({ error: 'معرف الإضافة غير صالح' });
+    }
+    const existing = await db.select().from(productAddons).where(eq(productAddons.id, addonId));
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'الإضافة غير موجودة' });
+    }
+
+    await db.delete(productAddons).where(eq(productAddons.id, addonId));
+    await logAudit({
+      userId: req.user!.id,
+      userName: req.user!.fullName,
+      action: 'DELETE_ADDON',
+      entityType: 'PRODUCT_ADDON',
+      entityId: String(addonId),
+      details: `حذف الإضافة: ${existing[0].nameAr}`,
+      previousValue: JSON.stringify(existing[0]),
+      ipAddress: req.ip,
+    });
+
+    res.json({ success: true, id: addonId });
+  } catch (error: any) {
+    res.status(500).json({ error: 'فشل حذف الإضافة' });
+  }
+});
+
+// ==========================================
+// 2C. OFFICIAL MENU IMPORT MODULE (CSV / XLSX / JSON — ADMIN/OWNER ONLY)
+// ==========================================
+apiRouter.post('/menu/import/preview', requireAuth, requireRole(['ADMIN', 'OWNER']), async (req: AuthRequest, res) => {
+  try {
+    const { filename, format, content, contentBase64 } = req.body || {};
+    if (!filename || (!content && !contentBase64)) {
+      return res.status(400).json({ error: 'يرجى تحديد ملف صالح بصيغة CSV أو XLSX أو JSON' });
+    }
+    const preview = await previewMenuImport({ filename, format, content, contentBase64 });
+    res.json(preview);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'فشل تحليل ملف القائمة' });
+  }
+});
+
+apiRouter.post('/menu/import/commit', requireAuth, requireRole(['ADMIN', 'OWNER']), async (req: AuthRequest, res) => {
+  try {
+    const { filename, format, content, contentBase64, confirmed, rejectOnDuplicates } = req.body || {};
+    if (confirmed !== true) {
+      return res.status(400).json({ error: 'مطلوب تأكيد صريح من المدير قبل تنفيذ استيراد القائمة' });
+    }
+    if (!filename || (!content && !contentBase64)) {
+      return res.status(400).json({ error: 'بيانات ملف القائمة مفقودة' });
+    }
+
+    const report = await commitMenuImport(
+      {
+        filename,
+        format,
+        content,
+        contentBase64,
+        confirmed: true,
+        rejectOnDuplicates: Boolean(rejectOnDuplicates),
+      },
+      {
+        userId: req.user!.id,
+        userName: req.user!.fullName,
+        ipAddress: req.ip,
+      }
+    );
+
+    res.status(201).json(report);
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'فشل تنفيذ استيراد القائمة' });
+  }
+});
+
+apiRouter.get('/menu/import/history', requireAuth, requireRole(['ADMIN', 'OWNER', 'MANAGER']), async (req: AuthRequest, res) => {
+  try {
+    const limit = Number(req.query.limit) || 30;
+    const history = await listMenuImportHistory(limit);
+    res.json(history);
+  } catch (error: any) {
+    res.status(500).json({ error: 'فشل تحميل سجل عمليات استيراد القائمة' });
+  }
+});
+
 // Safe Delete / Deactivate Product (NEVER physically deletes products so historical orders/invoices stay intact)
 apiRouter.delete('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
   try {
-    const prodId = Number(req.params.id);
+    const prodId = parsePositiveInt(req.params.id);
+    if (prodId === null) {
+      return res.status(400).json({ error: 'معرف الطبق غير صالح' });
+    }
     const existing = await db.select().from(products).where(eq(products.id, prodId));
     if (existing.length === 0) {
       return res.status(404).json({ error: 'الطبق غير موجود' });
@@ -1035,6 +1378,10 @@ apiRouter.delete('/products/:id', requireAuth, requireRole(['ADMIN', 'MANAGER'])
 // Price History Audit for a Product
 apiRouter.get('/products/:id/price-history', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req, res) => {
   try {
+    const prodId = parsePositiveInt(req.params.id);
+    if (prodId === null) {
+      return res.status(400).json({ error: 'معرف الطبق غير صالح' });
+    }
     const history = await db.select({
       id: priceHistory.id,
       oldPrice: priceHistory.oldPrice,
@@ -1045,7 +1392,7 @@ apiRouter.get('/products/:id/price-history', requireAuth, requireRole(['ADMIN', 
     })
     .from(priceHistory)
     .leftJoin(users, eq(priceHistory.changedByUserId, users.id))
-    .where(eq(priceHistory.productId, Number(req.params.id)))
+    .where(eq(priceHistory.productId, prodId))
     .orderBy(desc(priceHistory.changedAt));
 
     res.json(history);
@@ -1164,61 +1511,96 @@ apiRouter.post('/tables', requireAuth, requireRole(['ADMIN', 'MANAGER']), async 
 // Change Table Status or Free Table
 apiRouter.patch('/tables/:id/status', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER']), async (req: AuthRequest, res) => {
   try {
-    const tableId = Number(req.params.id);
-    const { status, currentOrderId } = req.body;
+    const tableId = parsePositiveInt(req.params.id);
+    if (tableId === null) {
+      return res.status(400).json({ error: 'معرف الطاولة غير صالح' });
+    }
+    const { status, currentOrderId } = req.body || {};
+    const allowedTableStatuses = new Set([
+      'AVAILABLE',
+      'OCCUPIED',
+      'RESERVED',
+      'WAITING_PAYMENT',
+      'READY',
+      'CLEANING',
+      'INACTIVE',
+    ]);
+    if (!status || !allowedTableStatuses.has(String(status))) {
+      return res.status(400).json({ error: 'حالة الطاولة غير صالحة' });
+    }
 
     const updated = await db.update(restaurantTables).set({
-      status,
+      status: String(status),
       currentOrderId: currentOrderId !== undefined ? currentOrderId : null,
     }).where(eq(restaurantTables.id, tableId)).returning();
 
+    if (updated.length === 0) {
+      return res.status(404).json({ error: 'الطاولة غير موجودة' });
+    }
+
     res.json(updated[0]);
   } catch (error: any) {
+    logStructuredError('UPDATE_TABLE_STATUS', error, req);
     res.status(500).json({ error: 'فشل تحديث حالة الطاولة' });
   }
 });
 
-// Transfer Table (Move Order from Table A to Table B)
+// Transfer Table (Move Order from Table A to Table B atomically inside db.transaction)
 apiRouter.post('/tables/transfer', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER']), async (req: AuthRequest, res) => {
   try {
-    const { fromTableId, toTableId } = req.body;
-    if (!fromTableId || !toTableId) return res.status(400).json({ error: 'طاولة المصدر والوجهة مطلوبتان' });
-    if (Number(fromTableId) === Number(toTableId)) {
+    const fromTableId = parsePositiveInt(req.body?.fromTableId);
+    const toTableId = parsePositiveInt(req.body?.toTableId);
+    if (fromTableId === null || toTableId === null) {
+      return res.status(400).json({ error: 'طاولة المصدر والوجهة مطلوبتان' });
+    }
+    if (fromTableId === toTableId) {
       return res.status(400).json({ error: 'لا يمكن نقل الطاولة إلى نفسها' });
     }
 
-    const fromT = await db.select().from(restaurantTables).where(eq(restaurantTables.id, Number(fromTableId)));
-    const toT = await db.select().from(restaurantTables).where(eq(restaurantTables.id, Number(toTableId)));
+    const txOutcome = db.transaction((tx):
+      | { kind: 'error'; status: number; error: string }
+      | { kind: 'transferred'; orderId: number; fromNumber: string; toNumber: string } => {
+      const fromT = tx.select().from(restaurantTables).where(eq(restaurantTables.id, fromTableId)).all();
+      const toT = tx.select().from(restaurantTables).where(eq(restaurantTables.id, toTableId)).all();
 
-    if (fromT.length === 0 || toT.length === 0) return res.status(404).json({ error: 'إحدى الطاولات غير موجودة' });
-    const orderId = fromT[0].currentOrderId;
-    if (!orderId) return res.status(400).json({ error: 'لا يوجد طلب نشط على طاولة المصدر' });
-    if (toT[0].status !== 'AVAILABLE' || toT[0].currentOrderId) {
-      return res.status(409).json({ error: 'الطاولة الهدف غير متاحة أو مشغولة بطلب آخر' });
-    }
+      if (fromT.length === 0 || toT.length === 0) {
+        return { kind: 'error', status: 404, error: 'إحدى الطاولات غير موجودة' };
+      }
+      const orderId = fromT[0].currentOrderId;
+      if (!orderId) {
+        return { kind: 'error', status: 400, error: 'لا يوجد طلب نشط على طاولة المصدر' };
+      }
+      if (toT[0].status !== 'AVAILABLE' || toT[0].currentOrderId) {
+        return { kind: 'error', status: 409, error: 'الطاولة الهدف غير متاحة أو مشغولة بطلب آخر' };
+      }
 
-    const targetStatus = fromT[0].status === 'WAITING_PAYMENT' ? 'WAITING_PAYMENT' : 'OCCUPIED';
+      const targetStatus = fromT[0].status === 'WAITING_PAYMENT' ? 'WAITING_PAYMENT' : 'OCCUPIED';
 
-    db.transaction((tx) => {
       tx.update(orders).set({
-        tableId: Number(toTableId),
+        tableId: toTableId,
         updatedAt: new Date().toISOString(),
       }).where(eq(orders.id, orderId)).run();
 
-      tx.update(restaurantTables).set({ status: 'AVAILABLE', currentOrderId: null }).where(eq(restaurantTables.id, Number(fromTableId))).run();
-      tx.update(restaurantTables).set({ status: targetStatus, currentOrderId: orderId }).where(eq(restaurantTables.id, Number(toTableId))).run();
+      tx.update(restaurantTables).set({ status: 'AVAILABLE', currentOrderId: null }).where(eq(restaurantTables.id, fromTableId)).run();
+      tx.update(restaurantTables).set({ status: targetStatus, currentOrderId: orderId }).where(eq(restaurantTables.id, toTableId)).run();
+
+      return { kind: 'transferred', orderId, fromNumber: fromT[0].tableNumber, toNumber: toT[0].tableNumber };
     });
+
+    if (txOutcome.kind === 'error') {
+      return res.status(txOutcome.status).json({ error: txOutcome.error });
+    }
 
     await logAudit({
       userId: req.user!.id,
       userName: req.user!.fullName,
       action: 'TRANSFER_TABLE',
-      details: `نقل الطلب رقم ${orderId} من الطاولة ${fromT[0].tableNumber} إلى ${toT[0].tableNumber}`,
+      details: `نقل الطلب رقم ${txOutcome.orderId} من الطاولة ${txOutcome.fromNumber} إلى ${txOutcome.toNumber}`,
     });
 
-    res.json({ success: true, message: `تم نقل الطلب إلى الطاولة ${toT[0].tableNumber} بنجاح` });
+    res.json({ success: true, message: `تم نقل الطلب إلى الطاولة ${txOutcome.toNumber} بنجاح` });
   } catch (error: any) {
-    console.error('Transfer table error:', sanitizeErrorMessage(error));
+    logStructuredError('TRANSFER_TABLE', error, req);
     res.status(500).json({ error: 'فشل نقل الطاولة' });
   }
 });
@@ -1442,7 +1824,7 @@ function validateAndPriceOrderItemsInTx(
     }
 
     // Recompute authoritative catalog price using product + verified variant + verified addons
-    let variantAdj = 0;
+    let baseWithVariant = Number(dbProd.price);
     const rawVariant = item.selectedVariant || (Array.isArray(item.variants) ? item.variants[0] : null);
     let normalizedVariant = rawVariant;
     if (rawVariant && rawVariant.id) {
@@ -1454,7 +1836,10 @@ function validateAndPriceOrderItemsInTx(
       if (vRows.length === 0) {
         throw new OrderInputError(400, 'الخيار المحدد للمنتج غير صالح');
       }
-      variantAdj = Number(vRows[0].priceAdjustment || 0);
+      baseWithVariant =
+        vRows[0].price !== null && vRows[0].price !== undefined
+          ? Number(vRows[0].price)
+          : Number(dbProd.price) + Number(vRows[0].priceAdjustment || 0);
       normalizedVariant = vRows[0];
     }
 
@@ -1476,7 +1861,7 @@ function validateAndPriceOrderItemsInTx(
       }
     }
 
-    const catalogUnitPrice = Number(dbProd.price) + variantAdj + addonsTotal;
+    const catalogUnitPrice = baseWithVariant + addonsTotal;
     let unitPrice = catalogUnitPrice;
     let priceOverrideAudit: ValidatedOrderItem['priceOverrideAudit'];
 
@@ -1692,7 +2077,8 @@ apiRouter.get('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER'
 // Get Single Order Details (with joined table, customer, cashier for accurate reprint)
 apiRouter.get('/orders/:id', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN']), async (req, res) => {
   try {
-    const orderId = Number(req.params.id);
+    const orderId = parsePositiveInt(req.params.id);
+    if (orderId === null) return res.status(400).json({ error: 'معرف الطلب غير صالح' });
     const orderResult = await db
       .select({
         order: orders,
@@ -1738,6 +2124,9 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
       customerId,
       items,
       discount = 0,
+      discountType,
+      discountValue,
+      discountReason,
       deliveryFee = 0,
       notes,
       isHeld = false,
@@ -1746,19 +2135,56 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
       offlineId,
     } = req.body;
 
+    const allowedOrderTypes = new Set(['DINE_IN', 'TAKEAWAY', 'DELIVERY']);
+    if (!allowedOrderTypes.has(String(type))) {
+      return res.status(400).json({ error: 'نوع الطلب غير صالح' });
+    }
+    if (tableId !== undefined && tableId !== null && String(tableId).trim() !== '' && parsePositiveInt(tableId) === null) {
+      return res.status(400).json({ error: 'معرف الطاولة غير صالح' });
+    }
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'الطلب يجب أن يحتوي على منتج واحد على الأقل' });
     }
 
     const rawDiscount = Number(discount);
+    const rawDiscountVal =
+      discountValue !== undefined && discountValue !== null && discountValue !== ''
+        ? Number(discountValue)
+        : rawDiscount;
+    const normalizedDiscountType =
+      discountType === 'PERCENT' || discountType === 'FIXED'
+        ? discountType
+        : rawDiscount > 0
+        ? 'FIXED'
+        : null;
     const rawFee = Number(deliveryFee);
-    if (!Number.isFinite(rawDiscount) || rawDiscount < 0 || !Number.isFinite(rawFee) || rawFee < 0) {
+    if (
+      !Number.isFinite(rawDiscount) ||
+      rawDiscount < 0 ||
+      !Number.isFinite(rawDiscountVal) ||
+      rawDiscountVal < 0 ||
+      !Number.isFinite(rawFee) ||
+      rawFee < 0
+    ) {
       return res.status(400).json({ error: 'قيمة الخصم أو رسوم التوصيل غير صالحة' });
     }
+    if (normalizedDiscountType === 'PERCENT' && rawDiscountVal > 100) {
+      return res.status(400).json({ error: 'نسبة الخصم يجب أن تكون بين 0% و 100%' });
+    }
 
-    const discountAmount = rawDiscount;
-    if (discountAmount > 0 && !['ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
-      return res.status(403).json({ error: 'لا تملك صلاحية تطبيق الخصم على الفاتورة' });
+    const hasRequestedDiscount = rawDiscount > 0 || (normalizedDiscountType === 'PERCENT' && rawDiscountVal > 0);
+    if (hasRequestedDiscount) {
+      const restrictCashierRow = sqlite
+        .prepare("SELECT value FROM restaurant_settings WHERE key = 'restrict_cashier_discount'")
+        .get() as { value: string } | undefined;
+      const cashierAllowed = restrictCashierRow?.value !== 'true';
+      const allowedDiscountRoles = cashierAllowed
+        ? ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER']
+        : ['OWNER', 'ADMIN', 'MANAGER'];
+      if (!allowedDiscountRoles.includes(req.user!.role)) {
+        return res.status(403).json({ error: 'لا تملك صلاحية تطبيق الخصم على الفاتورة' });
+      }
     }
     const feeAmount = rawFee;
 
@@ -1828,6 +2254,18 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
       const taxRate = Math.max(0, Number(taxSetting[0]?.value || 0)) || 0;
 
       const subtotal = validatedItems.reduce((sum, it) => sum + it.total, 0);
+      const computedDiscountAmount =
+        normalizedDiscountType === 'PERCENT'
+          ? Math.round((subtotal * rawDiscountVal) / 100)
+          : rawDiscount;
+      if (computedDiscountAmount > subtotal) {
+        return {
+          kind: 'error',
+          status: 400,
+          body: { error: 'قيمة الخصم لا يمكن أن تتجاوز المجموع الفرعي للطلب' },
+        };
+      }
+      const discountAmount = Math.max(0, computedDiscountAmount);
       const taxable = Math.max(0, subtotal - discountAmount);
       const taxAmount = Math.round(((taxable * taxRate) / 100) * 100) / 100;
       const total = Math.max(0, taxable + taxAmount + feeAmount);
@@ -1854,6 +2292,7 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
         .limit(1)
         .all();
       const shiftId = currentShift[0]?.id || null;
+      const discountAuthTime = discountAmount > 0 ? new Date().toISOString() : null;
 
       const orderInserts = tx.insert(orders).values({
         orderNumber,
@@ -1864,6 +2303,11 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
         status: isHeld ? 'NEW' : sendToKitchen ? 'PREPARING' : 'CONFIRMED',
         subtotal: String(subtotal),
         discount: String(discountAmount),
+        discountType: discountAmount > 0 ? normalizedDiscountType : null,
+        discountValue: discountAmount > 0 ? String(rawDiscountVal) : '0',
+        discountReason: discountAmount > 0 && discountReason ? String(discountReason).trim() : null,
+        discountAuthorizedBy: discountAmount > 0 ? req.user!.id : null,
+        discountAuthorizedAt: discountAuthTime,
         deliveryFee: String(feeAmount),
         taxRate: String(taxRate),
         taxAmount: String(taxAmount),
@@ -1976,7 +2420,23 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
       entityType: 'ORDER',
       entityId: String(createdOrder.id),
       details: `إنشاء فاتورة جديدة ${createdOrder.orderNumber} بمبلغ ${createdOrder.total} DA (${type})`,
+      newValue: JSON.stringify({ orderNumber: createdOrder.orderNumber, subtotal: createdOrder.subtotal, discount: createdOrder.discount, total: createdOrder.total }),
+      ipAddress: req.ip,
     });
+
+    if (Number(createdOrder.discount || 0) > 0) {
+      await logAudit({
+        userId: req.user!.id,
+        userName: req.user!.fullName,
+        action: 'APPLY_DISCOUNT',
+        entityType: 'ORDER',
+        entityId: String(createdOrder.id),
+        details: `تطبيق خصم بقيمة ${createdOrder.discount} DA (${createdOrder.discountType || 'FIXED'}: ${createdOrder.discountValue || createdOrder.discount}) على الفاتورة ${createdOrder.orderNumber}${createdOrder.discountReason ? ` — السبب: ${createdOrder.discountReason}` : ''}`,
+        previousValue: String(createdOrder.subtotal),
+        newValue: String(createdOrder.total),
+        ipAddress: req.ip,
+      });
+    }
 
     res.status(201).json(createdOrder);
   } catch (error: any) {
@@ -1991,8 +2451,11 @@ apiRouter.post('/orders', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER
 // Add / Update items on an existing open unpaid order (atomic delta stock adjustments + server-side price validation)
 apiRouter.post('/orders/:id/items', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER']), async (req: AuthRequest, res) => {
   try {
-    const orderId = Number(req.params.id);
-    const { items, replaceAll = false, discount, deliveryFee, notes, sendToKitchen = false } = req.body;
+    const orderId = parsePositiveInt(req.params.id);
+    if (orderId === null) {
+      return res.status(400).json({ error: 'معرف الطلب غير صالح' });
+    }
+    const { items, replaceAll = false, discount, deliveryFee, notes, sendToKitchen = false } = req.body || {};
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'يجب تحديد صنف واحد على الأقل' });
@@ -2024,8 +2487,19 @@ apiRouter.post('/orders/:id/items', requireAuth, requireRole(['ADMIN', 'MANAGER'
       }
 
       const discountAmount = discount !== undefined ? Math.max(0, Number(discount)) : Number(ord.discount || 0);
-      if (discount !== undefined && discountAmount !== Number(ord.discount || 0) && !['ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
-        return { kind: 'error', status: 403, error: 'لا تملك صلاحية تعديل الخصم' };
+      if (discount !== undefined && discountAmount !== Number(ord.discount || 0)) {
+        const restrictCashierRow = tx
+          .select({ value: restaurantSettings.value })
+          .from(restaurantSettings)
+          .where(eq(restaurantSettings.key, 'restrict_cashier_discount'))
+          .all()[0];
+        const cashierAllowed = restrictCashierRow?.value !== 'true';
+        const allowedDiscountRoles = cashierAllowed
+          ? ['OWNER', 'ADMIN', 'MANAGER', 'CASHIER']
+          : ['OWNER', 'ADMIN', 'MANAGER'];
+        if (!allowedDiscountRoles.includes(req.user!.role)) {
+          return { kind: 'error', status: 403, error: 'لا تملك صلاحية تعديل الخصم' };
+        }
       }
 
       const validatedItems = validateAndPriceOrderItemsInTx(tx, items, req.user!.role);
@@ -2134,10 +2608,21 @@ apiRouter.post('/orders/:id/items', requireAuth, requireRole(['ADMIN', 'MANAGER'
 
       const allItems = tx.select().from(orderItems).where(eq(orderItems.orderId, orderId)).all();
       const newSubtotal = allItems.reduce((sum, it) => sum + Number(it.total), 0);
+      if (discountAmount > newSubtotal) {
+        throw new OrderInputError(400, 'قيمة الخصم لا يمكن أن تتجاوز المجموع الفرعي للطلب');
+      }
       const feeAmount = deliveryFee !== undefined ? Math.max(0, Number(deliveryFee)) : Number(ord.deliveryFee || 0);
       const taxable = Math.max(0, newSubtotal - discountAmount);
       const taxAmount = Math.round(((taxable * taxRate) / 100) * 100) / 100;
       const newTotal = Math.max(0, taxable + taxAmount + feeAmount);
+
+      const existingPaid = Number(ord.paidAmount || 0);
+      if (existingPaid > 0 && newTotal < existingPaid - 0.01) {
+        throw new OrderInputError(
+          400,
+          'لا يمكن تخفيض إجمالي الفاتورة لأقل من المبلغ المدفوع مسبقاً؛ يرجى استخدام الاسترداد (Refund)'
+        );
+      }
 
       const nextStatus = sendToKitchen ? 'PREPARING' : ord.status === 'READY' || ord.status === 'NEW' ? 'CONFIRMED' : ord.status;
 
@@ -2182,7 +2667,10 @@ apiRouter.post('/orders/:id/items', requireAuth, requireRole(['ADMIN', 'MANAGER'
 // Resume Held Order (inside db.transaction with recipe stock deduction & full hydrated order return)
 apiRouter.post('/orders/:id/resume', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER']), async (req: AuthRequest, res) => {
   try {
-    const orderId = Number(req.params.id);
+    const orderId = parsePositiveInt(req.params.id);
+    if (orderId === null) {
+      return res.status(400).json({ error: 'معرف الطلب غير صالح' });
+    }
 
     const txOutcome = db.transaction((tx):
       | { kind: 'error'; status: number; error: string }
@@ -2275,8 +2763,11 @@ apiRouter.post('/orders/:id/resume', requireAuth, requireRole(['ADMIN', 'MANAGER
 // Cancel Order (atomic inventory restoration, blocks duplicate cancel & paid/refunded orders)
 apiRouter.post('/orders/:id/cancel', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const orderId = Number(req.params.id);
-    const { reason } = req.body;
+    const orderId = parsePositiveInt(req.params.id);
+    if (orderId === null) {
+      return res.status(400).json({ error: 'معرف الطلب غير صالح' });
+    }
+    const { reason } = req.body || {};
 
     const txOutcome = db.transaction((tx):
       | { kind: 'error'; status: number; error: string }
@@ -2349,8 +2840,11 @@ apiRouter.post('/orders/:id/cancel', requireAuth, requireRole(['ADMIN', 'MANAGER
 // Refund Paid Order (atomic inventory restoration, preserves historical order_items intact, prevents double refund)
 apiRouter.post('/orders/:id/refund', requireAuth, requireRole(['ADMIN', 'MANAGER']), async (req: AuthRequest, res) => {
   try {
-    const orderId = Number(req.params.id);
-    const { reason } = req.body;
+    const orderId = parsePositiveInt(req.params.id);
+    if (orderId === null) {
+      return res.status(400).json({ error: 'معرف الطلب غير صالح' });
+    }
+    const { reason } = req.body || {};
 
     const txOutcome = db.transaction((tx):
       | { kind: 'error'; status: number; error: string }
@@ -2448,38 +2942,54 @@ apiRouter.post('/orders/:id/refund', requireAuth, requireRole(['ADMIN', 'MANAGER
   }
 });
 
-// Update Order Item Status in Kitchen (KDS) + Sync Order & Table Status
+// Update Order Item Status in Kitchen (KDS) + Sync Order & Table Status Atomically
 apiRouter.patch('/kitchen/items/:id/status', requireAuth, requireRole(['ADMIN', 'MANAGER', 'KITCHEN', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const itemId = Number(req.params.id);
-    const { status } = req.body; // PREPARING, READY, SERVED
-
-    const updated = await db.update(orderItems).set({ status }).where(eq(orderItems.id, itemId)).returning();
-    if (updated.length === 0) return res.status(404).json({ error: 'الصنف غير موجود' });
-
-    const orderId = updated[0].orderId;
-    const allOrderItems = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
-    const ord = await db.select().from(orders).where(eq(orders.id, orderId));
-
-    if (ord.length > 0 && !['COMPLETED', 'CANCELLED', 'REFUNDED'].includes(ord[0].status)) {
-      const allReady = allOrderItems.length > 0 && allOrderItems.every((it) => it.status === 'READY' || it.status === 'SERVED');
-      const anyPreparing = allOrderItems.some((it) => it.status === 'PREPARING');
-
-      if (allReady) {
-        await db.update(orders).set({ status: 'READY', updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId));
-        if (ord[0].tableId) {
-          await db
-            .update(restaurantTables)
-            .set({ status: 'READY' })
-            .where(and(eq(restaurantTables.id, ord[0].tableId), eq(restaurantTables.currentOrderId, orderId)));
-        }
-      } else if (anyPreparing && ord[0].status !== 'PREPARING') {
-        await db.update(orders).set({ status: 'PREPARING', updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId));
-      }
+    const itemId = parsePositiveInt(req.params.id);
+    if (itemId === null) {
+      return res.status(400).json({ error: 'معرف الصنف غير صالح' });
+    }
+    const { status } = req.body || {}; // NEW, PREPARING, READY, SERVED
+    const allowedKitchenStatuses = new Set(['NEW', 'PREPARING', 'READY', 'SERVED']);
+    if (!status || !allowedKitchenStatuses.has(String(status))) {
+      return res.status(400).json({ error: 'حالة التحضير في المطبخ غير صالحة' });
     }
 
-    res.json(updated[0]);
+    const txOutcome = db.transaction((tx): { kind: 'not_found' } | { kind: 'updated'; item: any } => {
+      const updated = tx.update(orderItems).set({ status: String(status) }).where(eq(orderItems.id, itemId)).returning().all();
+      if (updated.length === 0) return { kind: 'not_found' };
+
+      const orderId = updated[0].orderId;
+      const allOrderItems = tx.select().from(orderItems).where(eq(orderItems.orderId, orderId)).all();
+      const ord = tx.select().from(orders).where(eq(orders.id, orderId)).all();
+
+      if (ord.length > 0 && !['COMPLETED', 'CANCELLED', 'REFUNDED'].includes(ord[0].status)) {
+        const allReady = allOrderItems.length > 0 && allOrderItems.every((it) => it.status === 'READY' || it.status === 'SERVED');
+        const anyPreparing = allOrderItems.some((it) => it.status === 'PREPARING');
+
+        if (allReady) {
+          tx.update(orders).set({ status: 'READY', updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId)).run();
+          if (ord[0].tableId) {
+            tx.update(restaurantTables)
+              .set({ status: 'READY' })
+              .where(and(eq(restaurantTables.id, ord[0].tableId), eq(restaurantTables.currentOrderId, orderId)))
+              .run();
+          }
+        } else if (anyPreparing && ord[0].status !== 'PREPARING') {
+          tx.update(orders).set({ status: 'PREPARING', updatedAt: new Date().toISOString() }).where(eq(orders.id, orderId)).run();
+        }
+      }
+
+      return { kind: 'updated', item: updated[0] };
+    });
+
+    if (txOutcome.kind === 'not_found') {
+      return res.status(404).json({ error: 'الصنف غير موجود' });
+    }
+
+    res.json(txOutcome.item);
   } catch (error: any) {
+    logStructuredError('UPDATE_KITCHEN_ITEM_STATUS', error, req);
     res.status(500).json({ error: 'فشل تحديث حالة الطبق في المطبخ' });
   }
 });
@@ -2533,19 +3043,26 @@ apiRouter.post('/payments', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHI
       idempotencyKey,
     } = req.body;
 
-    if (!orderId || !paymentList || !Array.isArray(paymentList) || paymentList.length === 0) {
+    const parsedOrderId = parsePositiveInt(orderId);
+    if (parsedOrderId === null || !paymentList || !Array.isArray(paymentList) || paymentList.length === 0) {
       return res.status(400).json({ error: 'بيانات الدفع غير مكتملة' });
     }
 
     const allowedMethods = new Set(['CASH', 'CARD', 'BANK_TRANSFER', 'CCP', 'BARIDIMOB', 'OTHER']);
 
     for (const p of paymentList) {
-      const amt = Number(p.amount);
-      if (!Number.isFinite(amt) || amt <= 0) {
+      const amt = parseFinitePositive(p?.amount);
+      if (amt === null) {
         return res.status(400).json({ error: 'مبلغ الدفع يجب أن يكون أكبر من صفر' });
       }
-      if (!allowedMethods.has(String(p.method))) {
-        return res.status(400).json({ error: `طريقة الدفع غير مدعومة: ${p.method}` });
+      if (!allowedMethods.has(String(p?.method))) {
+        return res.status(400).json({ error: `طريقة الدفع غير مدعومة: ${p?.method}` });
+      }
+      if (p?.tenderAmount !== undefined && parseFiniteNonNegative(p.tenderAmount) === null) {
+        return res.status(400).json({ error: 'المبلغ المستلم غير صالح' });
+      }
+      if (p?.changeAmount !== undefined && parseFiniteNonNegative(p.changeAmount) === null) {
+        return res.status(400).json({ error: 'مبلغ الباقي غير صالح' });
       }
     }
 
@@ -2870,46 +3387,67 @@ apiRouter.get('/cash-register/current', requireAuth, requireRole(['ADMIN', 'MANA
   }
 });
 
-// Open Cash Shift (Ouverture de caisse) — prevents two concurrent open shifts
+// Open Cash Shift (Ouverture de caisse) — atomic transaction prevents two concurrent open shifts
 apiRouter.post('/cash-register/open', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const { openingCash, notes } = req.body;
-    const openAmount = Number(openingCash) || 0;
-    if (openAmount < 0) {
-      return res.status(400).json({ error: 'الرصيد الافتتاحي لا يمكن أن يكون سالباً' });
+    const { openingCash, notes } = req.body || {};
+    const openAmount =
+      openingCash === undefined || openingCash === null || openingCash === ''
+        ? 0
+        : parseFiniteNonNegative(openingCash);
+    if (openAmount === null) {
+      return res.status(400).json({ error: 'الرصيد الافتتاحي لا يمكن أن يكون سالباً أو غير صالح' });
     }
 
-    const existing = await db
-      .select()
-      .from(cashShifts)
-      .where(eq(cashShifts.status, 'OPEN'));
+    const txOutcome = db.transaction((tx):
+      | { kind: 'error'; status: number; error: string }
+      | { kind: 'opened'; shift: any; shiftNumber: number } => {
+      const existing = tx
+        .select()
+        .from(cashShifts)
+        .where(eq(cashShifts.status, 'OPEN'))
+        .all();
 
-    if (existing.length > 0) {
-      return res.status(400).json({ error: 'توجد وردية مفتوحة بالفعل، يرجى إغلاقها قبل فتح وردية جديدة' });
+      if (existing.length > 0) {
+        return { kind: 'error', status: 400, error: 'توجد وردية مفتوحة بالفعل، يرجى إغلاقها قبل فتح وردية جديدة' };
+      }
+
+      const maxRow = tx
+        .select({
+          count: sql<number>`count(*)`,
+          maxId: sql<number>`COALESCE(MAX(${cashShifts.id}), 0)`,
+        })
+        .from(cashShifts)
+        .get();
+      const shiftNumber = Math.max(Number(maxRow?.count || 0), Number(maxRow?.maxId || 0)) + 1;
+
+      const inserted = tx.insert(cashShifts).values({
+        shiftNumber: String(shiftNumber),
+        cashierId: req.user!.id,
+        openingCash: String(openAmount),
+        status: 'OPEN',
+        notes: notes || null,
+      }).returning().all();
+
+      return { kind: 'opened', shift: inserted[0], shiftNumber };
+    });
+
+    if (txOutcome.kind === 'error') {
+      return res.status(txOutcome.status).json({ error: txOutcome.error });
     }
-
-    const countAll = await db.select({ count: sql<number>`count(*)` }).from(cashShifts);
-    const shiftNumber = Number(countAll[0]?.count || 0) + 1;
-
-    const inserted = await db.insert(cashShifts).values({
-      shiftNumber: String(shiftNumber),
-      cashierId: req.user!.id,
-      openingCash: String(openAmount),
-      status: 'OPEN',
-      notes: notes || null,
-    }).returning();
 
     await logAudit({
       userId: req.user!.id,
       userName: req.user!.fullName,
       action: 'OPEN_SHIFT',
       entityType: 'SHIFT',
-      entityId: String(inserted[0].id),
-      details: `فتح وردية صندوق رقم ${shiftNumber} برصيد افتتاحي ${openAmount} DA`,
+      entityId: String(txOutcome.shift.id),
+      details: `فتح وردية صندوق رقم ${txOutcome.shiftNumber} برصيد افتتاحي ${openAmount} DA`,
     });
 
-    res.status(201).json(inserted[0]);
+    res.status(201).json(txOutcome.shift);
   } catch (error: any) {
+    logStructuredError('OPEN_SHIFT', error, req);
     res.status(500).json({ error: 'فشل فتح الوردية' });
   }
 });
@@ -2917,7 +3455,20 @@ apiRouter.post('/cash-register/open', requireAuth, requireRole(['ADMIN', 'MANAGE
 // Close Cash Shift (Clôture de caisse / Z-Report)
 apiRouter.post('/cash-register/close', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const { shiftId, closingCash, notes, pendingOfflineCount } = req.body;
+    const { shiftId, closingCash, notes, pendingOfflineCount } = req.body || {};
+
+    const parsedShiftId = parsePositiveInt(shiftId);
+    if (parsedShiftId === null) {
+      return res.status(400).json({ error: 'معرف الوردية غير صالح' });
+    }
+
+    const actual =
+      closingCash === undefined || closingCash === null || closingCash === ''
+        ? 0
+        : parseFiniteNonNegative(closingCash);
+    if (actual === null) {
+      return res.status(400).json({ error: 'مبلغ إغلاق الصندوق غير صالح أو سالب' });
+    }
 
     if (Number(pendingOfflineCount || 0) > 0) {
       return res.status(409).json({
@@ -2926,21 +3477,24 @@ apiRouter.post('/cash-register/close', requireAuth, requireRole(['ADMIN', 'MANAG
       });
     }
 
-    const openConflicts = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(syncConflicts)
-      .where(eq(syncConflicts.status, 'OPEN'));
-    if (Number(openConflicts[0]?.count || 0) > 0) {
-      return res.status(409).json({
-        error: 'توجد تعارضات مزامنة غير محلولة، يرجى مراجعتها في مركز المزامنة قبل إغلاق الوردية',
-        code: 'OPEN_SYNC_CONFLICTS',
-      });
-    }
-
     const txOutcome = db.transaction((tx):
-      | { kind: 'error'; status: number; error: string }
+      | { kind: 'error'; status: number; error: string; code?: string }
       | { kind: 'closed'; shift: any; expected: number; actual: number; diff: number } => {
-      const targetShift = tx.select().from(cashShifts).where(eq(cashShifts.id, Number(shiftId))).all();
+      const openConflicts = tx
+        .select({ count: sql<number>`count(*)` })
+        .from(syncConflicts)
+        .where(eq(syncConflicts.status, 'OPEN'))
+        .all();
+      if (Number(openConflicts[0]?.count || 0) > 0) {
+        return {
+          kind: 'error',
+          status: 409,
+          error: 'توجد تعارضات مزامنة غير محلولة، يرجى مراجعتها في مركز المزامنة قبل إغلاق الوردية',
+          code: 'OPEN_SYNC_CONFLICTS',
+        };
+      }
+
+      const targetShift = tx.select().from(cashShifts).where(eq(cashShifts.id, parsedShiftId)).all();
       if (targetShift.length === 0) {
         return { kind: 'error', status: 404, error: 'الوردية غير موجودة' };
       }
@@ -2950,9 +3504,16 @@ apiRouter.post('/cash-register/close', requireAuth, requireRole(['ADMIN', 'MANAG
         return { kind: 'error', status: 400, error: 'هذه الوردية مغلقة بالفعل' };
       }
 
-      const actual = Number(closingCash) || 0;
-      const expected = Number(s.openingCash) + Number(s.totalCashSales) + Number(s.totalCashIn) - Number(s.totalCashOut) - Number(s.totalExpenses);
-      const diff = actual - expected;
+      const expected =
+        Math.round(
+          (Number(s.openingCash) +
+            Number(s.totalCashSales) +
+            Number(s.totalCashIn) -
+            Number(s.totalCashOut) -
+            Number(s.totalExpenses)) *
+            100
+        ) / 100;
+      const diff = Math.round((actual - expected) * 100) / 100;
 
       const closed = tx.update(cashShifts).set({
         status: 'CLOSED',
@@ -2968,7 +3529,9 @@ apiRouter.post('/cash-register/close', requireAuth, requireRole(['ADMIN', 'MANAG
     });
 
     if (txOutcome.kind === 'error') {
-      return res.status(txOutcome.status).json({ error: txOutcome.error });
+      return res.status(txOutcome.status).json(
+        txOutcome.code ? { error: txOutcome.error, code: txOutcome.code } : { error: txOutcome.error }
+      );
     }
 
     await logAudit({
@@ -2982,6 +3545,7 @@ apiRouter.post('/cash-register/close', requireAuth, requireRole(['ADMIN', 'MANAG
 
     res.json({ ...txOutcome.shift, cashDifference: txOutcome.shift.difference });
   } catch (error: any) {
+    logStructuredError('CLOSE_SHIFT', error, req);
     res.status(500).json({ error: 'فشل إغلاق الوردية' });
   }
 });
@@ -3330,53 +3894,63 @@ apiRouter.get('/inventory/movements', requireAuth, requireRole(['ADMIN', 'MANAGE
   }
 });
 
-// Manual Stock Adjustment (Stock Count / Inventaire)
+// Manual Stock Adjustment (Stock Count / Inventaire) — atomic read+delta inside db.transaction
 apiRouter.post('/inventory/adjust', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVENTORY']), async (req: AuthRequest, res) => {
   try {
-    const { ingredientId, actualQuantity, reason, notes } = req.body;
-    if (!ingredientId || actualQuantity === undefined) {
+    const { ingredientId, actualQuantity, reason, notes } = req.body || {};
+    const parsedIngredientId = parsePositiveInt(ingredientId);
+    if (parsedIngredientId === null || actualQuantity === undefined) {
       return res.status(400).json({ error: 'رقم المادة والكمية الفعلية مطلوبان' });
     }
 
-    const newQty = Number(actualQuantity);
-    if (!Number.isFinite(newQty) || newQty < 0) {
+    const newQty = parseFiniteNonNegative(actualQuantity);
+    if (newQty === null) {
       return res.status(400).json({ error: 'الكمية الفعلية يجب أن تكون رقماً غير سالب' });
     }
 
-    const ing = await db.select().from(ingredients).where(eq(ingredients.id, Number(ingredientId)));
-    if (ing.length === 0) return res.status(404).json({ error: 'المادة غير موجودة' });
+    const txOutcome = db.transaction((tx):
+      | { kind: 'not_found' }
+      | { kind: 'adjusted'; nameAr: string; currentQty: number; difference: number } => {
+      const ing = tx.select().from(ingredients).where(eq(ingredients.id, parsedIngredientId)).all();
+      if (ing.length === 0) return { kind: 'not_found' };
 
-    const currentQty = Number(ing[0].currentStock);
-    const difference = newQty - currentQty;
+      const currentQty = Number(ing[0].currentStock);
+      const difference = Math.round((newQty - currentQty) * 1000) / 1000;
 
-    db.transaction((tx) => {
       tx.update(ingredients).set({
         currentStock: String(newQty),
         updatedAt: new Date().toISOString(),
-      }).where(eq(ingredients.id, Number(ingredientId))).run();
+      }).where(eq(ingredients.id, parsedIngredientId)).run();
 
       tx.insert(inventoryMovements).values({
-        ingredientId: Number(ingredientId),
+        ingredientId: parsedIngredientId,
         type: 'ADJUSTMENT',
         quantity: String(difference),
         referenceType: 'STOCK_COUNT',
         performedBy: req.user!.id,
         notes: notes || `جرد مخزون: الفارق ${difference} ${ing[0].unit} - السبب: ${reason || 'تصحيح رصيد'}`,
       }).run();
+
+      return { kind: 'adjusted', nameAr: ing[0].nameAr, currentQty, difference };
     });
+
+    if (txOutcome.kind === 'not_found') {
+      return res.status(404).json({ error: 'المادة غير موجودة' });
+    }
 
     await logAudit({
       userId: req.user!.id,
       userName: req.user!.fullName,
       action: 'STOCK_ADJUSTMENT',
       entityType: 'INGREDIENT',
-      entityId: String(ingredientId),
-      details: `تسوية جرد للمادة ${ing[0].nameAr}: الرصيد السابق ${currentQty}، الجديد ${newQty}`,
+      entityId: String(parsedIngredientId),
+      details: `تسوية جرد للمادة ${txOutcome.nameAr}: الرصيد السابق ${txOutcome.currentQty}، الجديد ${newQty}`,
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, message: 'تم تحديث رصيد المخزون بنجاح' });
+    res.json({ success: true, message: 'تم تحديث رصيد المخزون بنجاح', difference: txOutcome.difference });
   } catch (error: any) {
+    logStructuredError('STOCK_ADJUSTMENT', error, req);
     res.status(500).json({ error: 'فشل تسوية المخزون' });
   }
 });
@@ -3402,55 +3976,93 @@ apiRouter.get('/waste', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVENTORY
 
 apiRouter.post('/waste', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVENTORY', 'KITCHEN']), async (req: AuthRequest, res) => {
   try {
-    const { ingredientId, productId, name, quantity, unit, reason, cost, notes } = req.body;
-    if (!name || !quantity || !reason) {
+    const { ingredientId, productId, name, quantity, unit, reason, cost, notes } = req.body || {};
+    const cleanName = typeof name === 'string' ? name.trim() : '';
+    const cleanReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!cleanName || quantity === undefined || quantity === null || !cleanReason) {
       return res.status(400).json({ error: 'اسم المادة والكمية والسبب حقول إلزامية' });
     }
 
-    const numQty = Number(quantity);
-    const numCost = Number(cost) || 0;
+    const numQty = parseFinitePositive(quantity);
+    if (numQty === null) {
+      return res.status(400).json({ error: 'كمية الهدر يجب أن تكون رقماً موجباً أكبر من صفر' });
+    }
 
-    db.transaction((tx) => {
+    const numCost =
+      cost === undefined || cost === null || cost === '' ? 0 : parseFiniteNonNegative(cost);
+    if (numCost === null) {
+      return res.status(400).json({ error: 'تكلفة الهدر يجب أن تكون رقماً غير سالب' });
+    }
+
+    const hasIngredientId = ingredientId !== undefined && ingredientId !== null && String(ingredientId).trim() !== '';
+    const parsedIngredientId = hasIngredientId ? parsePositiveInt(ingredientId) : null;
+    if (hasIngredientId && parsedIngredientId === null) {
+      return res.status(400).json({ error: 'معرف المادة غير صالح' });
+    }
+
+    const hasProductId = productId !== undefined && productId !== null && String(productId).trim() !== '';
+    const parsedProductId = hasProductId ? parsePositiveInt(productId) : null;
+    if (hasProductId && parsedProductId === null) {
+      return res.status(400).json({ error: 'معرف الطبق غير صالح' });
+    }
+
+    const txOutcome = db.transaction((tx): { kind: 'error'; status: number; error: string } | { kind: 'created'; wasteId: number } => {
+      if (parsedIngredientId !== null) {
+        const ing = tx.select({ id: ingredients.id }).from(ingredients).where(eq(ingredients.id, parsedIngredientId)).all();
+        if (ing.length === 0) {
+          return { kind: 'error', status: 404, error: 'المادة المرتبطة بالهدر غير موجودة' };
+        }
+      }
+
       const inserted = tx.insert(wasteRecords).values({
-        ingredientId: ingredientId ? Number(ingredientId) : null,
-        productId: productId ? Number(productId) : null,
-        name,
+        ingredientId: parsedIngredientId,
+        productId: parsedProductId,
+        name: cleanName,
         quantity: String(numQty),
-        unit: unit || 'KG',
-        reason, // EXPIRED, DAMAGED, BURNED, SPILLED, OTHER
-        cost: String(numCost),
+        unit: unit ? String(unit).trim() : 'KG',
+        reason: cleanReason, // EXPIRED, DAMAGED, BURNED, SPILLED, OTHER
+        cost: String(Math.round(numCost * 100) / 100),
         employeeId: req.user!.id,
         notes: notes || null,
       }).returning().all();
 
       // Deduct from inventory if linked to ingredient
-      if (ingredientId) {
+      if (parsedIngredientId !== null) {
         tx.update(ingredients).set({
           currentStock: sql`${ingredients.currentStock} - ${numQty}`,
           updatedAt: new Date().toISOString(),
-        }).where(eq(ingredients.id, Number(ingredientId))).run();
+        }).where(eq(ingredients.id, parsedIngredientId)).run();
 
         tx.insert(inventoryMovements).values({
-          ingredientId: Number(ingredientId),
+          ingredientId: parsedIngredientId,
           type: 'WASTE',
           quantity: String(-numQty),
           referenceType: 'WASTE',
           referenceId: inserted[0].id,
           performedBy: req.user!.id,
-          notes: `تسجيل هدر: ${reason} - ${notes || ''}`,
+          notes: `تسجيل هدر: ${cleanReason} - ${notes || ''}`,
         }).run();
       }
+
+      return { kind: 'created', wasteId: inserted[0].id };
     });
+
+    if (txOutcome.kind === 'error') {
+      return res.status(txOutcome.status).json({ error: txOutcome.error });
+    }
 
     await logAudit({
       userId: req.user!.id,
       userName: req.user!.fullName,
       action: 'RECORD_WASTE',
-      details: `تسجيل تالف/هدر: ${name} (${numQty} ${unit}) - السبب: ${reason}`,
+      entityType: 'WASTE',
+      entityId: String(txOutcome.wasteId),
+      details: `تسجيل تالف/هدر: ${cleanName} (${numQty} ${unit || 'KG'}) - السبب: ${cleanReason}`,
     });
 
-    res.status(201).json({ success: true, message: 'تم تسجيل الهدر وخصمه من المخزون بنجاح' });
+    res.status(201).json({ success: true, id: txOutcome.wasteId, message: 'تم تسجيل الهدر وخصمه من المخزون بنجاح' });
   } catch (error: any) {
+    logStructuredError('RECORD_WASTE', error, req);
     res.status(500).json({ error: 'فشل تسجيل التالف' });
   }
 });
@@ -3529,26 +4141,68 @@ apiRouter.get('/purchases', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVEN
   }
 });
 
-// Create Purchase Order (Increments Stock automatically!)
+// Create Purchase Order (Atomically validates supplier/ingredients, increments stock & logs movements)
 apiRouter.post('/purchases', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVENTORY']), async (req: AuthRequest, res) => {
   try {
-    const { supplierId, invoiceDate, items, notes } = req.body;
-    if (!supplierId || !items || !Array.isArray(items) || items.length === 0) {
+    const { supplierId, invoiceDate, items, notes } = req.body || {};
+    const parsedSupplierId = parsePositiveInt(supplierId);
+    if (parsedSupplierId === null || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'المورد وبنود الشراء مطلوبة' });
     }
 
+    const validatedItems: { ingredientId: number; quantity: number; unitCost: number; itemTotal: number }[] = [];
     let totalAmount = 0;
     for (const it of items) {
-      totalAmount += Number(it.quantity) * Number(it.unitCost);
+      const ingId = parsePositiveInt(it?.ingredientId);
+      const qty = parseFinitePositive(it?.quantity);
+      const cost = parseFiniteNonNegative(it?.unitCost);
+      if (ingId === null || qty === null || cost === null) {
+        return res.status(400).json({
+          error: 'كل بند شراء يتطلب معرف مادة صالح وكمية موجبة وتكلفة وحدة غير سالبة',
+        });
+      }
+      const itemTotal = Math.round(qty * cost * 100) / 100;
+      totalAmount = Math.round((totalAmount + itemTotal) * 100) / 100;
+      validatedItems.push({ ingredientId: ingId, quantity: qty, unitCost: cost, itemTotal });
     }
 
-    const countAll = await db.select({ count: sql<number>`count(*)` }).from(purchases);
-    const purchaseNumber = `ACH-${String(Number(countAll[0]?.count || 0) + 1).padStart(4, '0')}`;
+    const txOutcome = db.transaction((tx):
+      | { kind: 'error'; status: number; error: string }
+      | { kind: 'created'; purchase: any; purchaseNumber: string } => {
+      const supRows = tx.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, parsedSupplierId)).all();
+      if (supRows.length === 0) {
+        return { kind: 'error', status: 404, error: 'المورد المحدد غير موجود' };
+      }
 
-    const createdPurchase = db.transaction((tx) => {
+      const uniqueIngIds = [...new Set(validatedItems.map((i) => i.ingredientId))];
+      const existingIngs = tx
+        .select({ id: ingredients.id })
+        .from(ingredients)
+        .where(inArray(ingredients.id, uniqueIngIds))
+        .all();
+      const existingIngSet = new Set(existingIngs.map((r) => r.id));
+      const missingIngId = uniqueIngIds.find((id) => !existingIngSet.has(id));
+      if (missingIngId !== undefined) {
+        return { kind: 'error', status: 404, error: `المادة رقم ${missingIngId} غير موجودة في المخزون` };
+      }
+
+      const maxRow = tx
+        .select({
+          count: sql<number>`count(*)`,
+          maxId: sql<number>`COALESCE(MAX(${purchases.id}), 0)`,
+        })
+        .from(purchases)
+        .get();
+      let seq = Math.max(Number(maxRow?.count || 0), Number(maxRow?.maxId || 0)) + 1;
+      let purchaseNumber = `ACH-${String(seq).padStart(4, '0')}`;
+      while (tx.select({ id: purchases.id }).from(purchases).where(eq(purchases.purchaseNumber, purchaseNumber)).all().length > 0) {
+        seq += 1;
+        purchaseNumber = `ACH-${String(seq).padStart(4, '0')}`;
+      }
+
       const p = tx.insert(purchases).values({
         purchaseNumber,
-        supplierId: Number(supplierId),
+        supplierId: parsedSupplierId,
         totalAmount: String(totalAmount),
         paidAmount: String(totalAmount),
         paymentStatus: 'PAID',
@@ -3559,26 +4213,25 @@ apiRouter.post('/purchases', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVE
 
       const newP = p[0];
 
-      for (const it of items) {
-        const itemTotal = Number(it.quantity) * Number(it.unitCost);
+      for (const it of validatedItems) {
         tx.insert(purchaseItems).values({
           purchaseId: newP.id,
-          ingredientId: Number(it.ingredientId),
+          ingredientId: it.ingredientId,
           quantity: String(it.quantity),
           unitCost: String(it.unitCost),
-          totalCost: String(itemTotal),
+          totalCost: String(it.itemTotal),
         }).run();
 
         // Increment ingredient stock & update latest cost
         tx.update(ingredients).set({
-          currentStock: sql`${ingredients.currentStock} + ${Number(it.quantity)}`,
+          currentStock: sql`${ingredients.currentStock} + ${it.quantity}`,
           costPerUnit: String(it.unitCost),
           updatedAt: new Date().toISOString(),
-        }).where(eq(ingredients.id, Number(it.ingredientId))).run();
+        }).where(eq(ingredients.id, it.ingredientId)).run();
 
         // Record stock in movement
         tx.insert(inventoryMovements).values({
-          ingredientId: Number(it.ingredientId),
+          ingredientId: it.ingredientId,
           type: 'PURCHASE',
           quantity: String(it.quantity),
           cost: String(it.unitCost),
@@ -3589,21 +4242,25 @@ apiRouter.post('/purchases', requireAuth, requireRole(['ADMIN', 'MANAGER', 'INVE
         }).run();
       }
 
-      return newP;
+      return { kind: 'created', purchase: newP, purchaseNumber };
     });
+
+    if (txOutcome.kind === 'error') {
+      return res.status(txOutcome.status).json({ error: txOutcome.error });
+    }
 
     await logAudit({
       userId: req.user!.id,
       userName: req.user!.fullName,
       action: 'PURCHASE',
       entityType: 'PURCHASE',
-      entityId: String(createdPurchase.id),
-      details: `تسجيل فاتورة مشتريات ${purchaseNumber} بمبلغ ${totalAmount} DA`,
+      entityId: String(txOutcome.purchase.id),
+      details: `تسجيل فاتورة مشتريات ${txOutcome.purchaseNumber} بمبلغ ${totalAmount} DA`,
     });
 
-    res.status(201).json(createdPurchase);
+    res.status(201).json(txOutcome.purchase);
   } catch (error: any) {
-    console.error('Purchase error:', sanitizeErrorMessage(error));
+    logStructuredError('CREATE_PURCHASE', error, req);
     res.status(500).json({ error: 'فشل تسجيل فاتورة الشراء' });
   }
 });
@@ -3668,18 +4325,38 @@ apiRouter.get('/deliveries', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASH
 
 apiRouter.patch('/deliveries/:id/status', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const id = Number(req.params.id);
-    const { status, driverName, driverPhone } = req.body;
+    const id = parsePositiveInt(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ error: 'معرف التوصيل غير صالح' });
+    }
+    const { status, driverName, driverPhone } = req.body || {};
+    const allowedDeliveryStatuses = new Set([
+      'NEW',
+      'PENDING',
+      'PREPARING',
+      'ASSIGNED',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'CANCELLED',
+    ]);
+    if (!status || !allowedDeliveryStatuses.has(String(status))) {
+      return res.status(400).json({ error: 'حالة التوصيل غير صالحة' });
+    }
 
     const updated = await db.update(deliveries).set({
-      status,
+      status: String(status),
       driverName: driverName || undefined,
       driverPhone: driverPhone || undefined,
       deliveredAt: status === 'DELIVERED' ? new Date().toISOString() : undefined,
     }).where(eq(deliveries.id, id)).returning();
 
+    if (updated.length === 0) {
+      return res.status(404).json({ error: 'طلب التوصيل غير موجود' });
+    }
+
     res.json(updated[0]);
   } catch (error: any) {
+    logStructuredError('UPDATE_DELIVERY_STATUS', error, req);
     res.status(500).json({ error: 'فشل تحديث حالة التوصيل' });
   }
 });
@@ -4704,7 +5381,7 @@ apiRouter.post('/sync/batch', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CAS
           if (!Number.isFinite(offDiscount) || offDiscount < 0 || !Number.isFinite(offFee) || offFee < 0) {
             throw new SyncValidationError('قيمة الخصم أو رسوم التوصيل غير صالحة', false, 'VALIDATION_ERROR');
           }
-          if (offDiscount > 0 && !['ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
+          if (offDiscount > 0 && !['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
             throw new SyncValidationError('لا تملك صلاحية تطبيق الخصم على الفاتورة', false, 'VALIDATION_ERROR');
           }
 
@@ -4764,7 +5441,7 @@ apiRouter.post('/sync/batch', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CAS
             const mustCheckPrice =
               strictConflict ||
               rawItem.expectedCatalogPrice !== undefined ||
-              !['ADMIN', 'MANAGER'].includes(req.user!.role);
+              !['OWNER', 'ADMIN', 'MANAGER'].includes(req.user!.role);
 
             if (priceDiffers && mustCheckPrice && !rawItem.priceOverrideReason) {
               if (resolution?.action === 'ACCEPT_SERVER_CATALOG') {
@@ -4774,7 +5451,7 @@ apiRouter.post('/sync/batch', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CAS
                   expectedCatalogPrice: serverCatalogUnitPrice,
                 };
               } else if (resolution?.action === 'OVERRIDE_PRICE') {
-                if (!['ADMIN', 'MANAGER'].includes(req.user!.role)) {
+                if (!['OWNER', 'ADMIN', 'MANAGER'].includes(req.user!.role)) {
                   throw new SyncValidationError(
                     'لا تملك صلاحية اعتماد السعر اليدوي — يتطلب صلاحية مدير أو مشرف',
                     false,
@@ -4863,7 +5540,7 @@ apiRouter.post('/sync/batch', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CAS
             }
             if (shortages.length > 0) {
               if (resolution?.action === 'FORCE_STOCK') {
-                if (!['ADMIN', 'MANAGER'].includes(req.user!.role)) {
+                if (!['OWNER', 'ADMIN', 'MANAGER'].includes(req.user!.role)) {
                   throw new SyncValidationError(
                     'تجاوز عجز المخزون يتطلب صلاحية المدير أو المشرف',
                     false,
@@ -4916,7 +5593,7 @@ apiRouter.post('/sync/batch', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CAS
 
               const isPaidInitiallyCheck = offOrder.paymentStatus === 'PAID';
               const allowForceAttach =
-                resolution?.action === 'FORCE_ATTACH_ORDER' && ['ADMIN', 'MANAGER'].includes(req.user!.role);
+                resolution?.action === 'FORCE_ATTACH_ORDER' && ['OWNER', 'ADMIN', 'MANAGER'].includes(req.user!.role);
               if (tbl[0].currentOrderId && !offOrder.isHeld && !isPaidInitiallyCheck && !allowForceAttach) {
                 const occOrd = tx.select().from(orders).where(eq(orders.id, tbl[0].currentOrderId)).all()[0];
                 if (
@@ -5396,7 +6073,10 @@ apiRouter.get('/sync/conflicts', requireAuth, requireRole(['ADMIN', 'MANAGER', '
 
 apiRouter.post('/sync/conflicts/:id/resolve', requireAuth, requireRole(['ADMIN', 'MANAGER', 'CASHIER']), async (req: AuthRequest, res) => {
   try {
-    const conflictId = Number(req.params.id);
+    const conflictId = parsePositiveInt(req.params.id);
+    if (conflictId === null) {
+      return res.status(400).json({ error: 'معرف التعارض غير صالح' });
+    }
     const { action } = req.body || {};
     const allowedActions = new Set([
       'DISCARD',
@@ -5415,7 +6095,7 @@ apiRouter.post('/sync/conflicts/:id/resolve', requireAuth, requireRole(['ADMIN',
 
     if (
       ['OVERRIDE_PRICE', 'FORCE_STOCK', 'FORCE_ATTACH_ORDER', 'DISCARD'].includes(String(action)) &&
-      !['ADMIN', 'MANAGER'].includes(req.user!.role)
+      !['OWNER', 'ADMIN', 'MANAGER'].includes(req.user!.role)
     ) {
       return res.status(403).json({
         error: 'هذا الإجراء متاح فقط للمدير أو المشرف العام',
@@ -5504,7 +6184,7 @@ apiRouter.post(
       } = req.body || {};
 
       // Enforce RBAC for explicit reprints (Cashier / Manager / Admin only)
-      if (isReprint && !['ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
+      if (isReprint && !['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
         return res.status(403).json({ error: 'إعادة طباعة الإيصال متاحة فقط للكاشير أو المدير' });
       }
 
@@ -5536,16 +6216,19 @@ apiRouter.post(
           jobId: result.job.id,
           spoolerAccepted: Boolean(result.job.spoolerAccepted),
           hardwareConfirmed: Boolean(result.job.confirmedAt),
+          deliveryState: result.job.confirmedAt ? 'CONFIRMED' : 'SPOOLED',
           message: `تم تسجيل/طباعة وصل هذا الطلب (${result.job.orderNumber}) مسبقاً (وصل واحد فقط لكل طلب). استخدم «إعادة طباعة الوصل» عند الحاجة.`,
         });
       }
 
       const transport = result.transportResult!;
+      const deliveryState = resolveDeliveryState(transport);
       if (!transport.success) {
         return res.status(502).json({
           success: false,
           mode: transport.mode,
           status: result.job.status,
+          deliveryState: 'FAILED',
           error: transport.message || transport.error || 'فشل إرسال مهمة الطباعة',
           message: transport.message || transport.error || 'فشل إرسال مهمة الطباعة',
           job: result.job,
@@ -5569,6 +6252,7 @@ apiRouter.post(
         success: true,
         mode: transport.mode,
         status: result.job.status,
+        deliveryState,
         isReprint: Boolean(result.job.isReprint),
         message: transport.message,
         job: result.job,
@@ -5615,7 +6299,7 @@ apiRouter.post(
       if (existingRows.length === 0) {
         return res.status(404).json({ error: 'مهمة الطباعة غير موجودة' });
       }
-      if (existingRows[0].isReprint && !['ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
+      if (existingRows[0].isReprint && !['OWNER', 'ADMIN', 'MANAGER', 'CASHIER'].includes(req.user!.role)) {
         return res.status(403).json({ error: 'إعادة طباعة الإيصال متاحة فقط للكاشير أو المدير' });
       }
       const { job, transportResult } = await retryExistingPrintJob(jobId, req.body?.rawBase64);
@@ -5633,16 +6317,35 @@ apiRouter.post(
         return res.status(502).json({
           success: false,
           status: job.status,
+          deliveryState: 'FAILED',
+          spoolerAccepted: false,
+          hardwareConfirmed: false,
           error: transportResult.message || 'فشل إعادة محاولة الطباعة',
           job,
           transportResult,
         });
       }
-      res.json({ success: true, status: job.status, job, transportResult });
+      res.json({
+        success: true,
+        status: job.status,
+        deliveryState: resolveDeliveryState(transportResult),
+        spoolerAccepted: transportResult.spoolerAccepted,
+        hardwareConfirmed: transportResult.hardwareConfirmed,
+        job,
+        transportResult,
+      });
     } catch (error: any) {
       const msg = error?.message || 'فشل إعادة محاولة الطباعة';
-      const statusCode = msg.includes('غير موجودة') ? 404 : msg.includes('مطبوعة بالفعل') ? 409 : 500;
-      res.status(statusCode).json({ error: msg });
+      const code = error?.code;
+      const statusCode =
+        code === 'MISSING_FULL_PRINT_PAYLOAD'
+          ? 422
+          : msg.includes('غير موجودة')
+          ? 404
+          : msg.includes('مطبوعة بالفعل')
+          ? 409
+          : 500;
+      res.status(statusCode).json(code ? { error: msg, code } : { error: msg });
     }
   }
 );
@@ -5663,6 +6366,23 @@ apiRouter.post(
         return res.status(404).json({ error: 'مهمة الطباعة الأصلية غير موجودة' });
       }
       const orig = origRows[0];
+      let resolvedRawBase64: string | undefined =
+        typeof req.body?.rawBase64 === 'string' && req.body.rawBase64.trim().length > 0
+          ? req.body.rawBase64.trim()
+          : undefined;
+      if (!resolvedRawBase64) {
+        const storedFullPayload = readFullPrintPayload(orig.id);
+        if (storedFullPayload && storedFullPayload.length > 0) {
+          resolvedRawBase64 = storedFullPayload.toString('base64');
+        }
+      }
+      if (!resolvedRawBase64) {
+        return res.status(422).json({
+          error: 'تعذر إعادة الطباعة: بيانات الوصل الأصلية الكاملة غير متوفرة (ممنوع الطباعة من معاينة مختصرة).',
+          code: 'MISSING_FULL_PRINT_PAYLOAD',
+        });
+      }
+
       const result = await createAndProcessPrintJob({
         orderId: orig.orderId,
         orderNumber: orig.orderNumber,
@@ -5675,8 +6395,8 @@ apiRouter.post(
         paperWidth: orig.paperWidth,
         isReprint: true,
         requestedBy: req.user!.id,
-        rawBase64: req.body?.rawBase64,
-        textContent: orig.payloadPreview || undefined,
+        rawBase64: resolvedRawBase64,
+        payloadPreview: orig.payloadPreview || undefined,
         clientHandled: Boolean(req.body?.clientHandled),
       });
 
@@ -5694,11 +6414,20 @@ apiRouter.post(
         return res.status(502).json({
           success: false,
           status: result.job.status,
+          deliveryState: 'FAILED',
           error: result.transportResult.message,
           job: result.job,
         });
       }
-      res.json({ success: true, status: result.job.status, job: result.job, transportResult: result.transportResult });
+      res.json({
+        success: true,
+        status: result.job.status,
+        deliveryState: result.transportResult ? resolveDeliveryState(result.transportResult) : 'SPOOLED',
+        spoolerAccepted: Boolean(result.transportResult?.spoolerAccepted),
+        hardwareConfirmed: Boolean(result.transportResult?.hardwareConfirmed),
+        job: result.job,
+        transportResult: result.transportResult,
+      });
     } catch (error: any) {
       res.status(500).json({ error: sanitizeErrorMessage(error) || 'فشل إعادة الطباعة' });
     }
@@ -5706,28 +6435,37 @@ apiRouter.post(
 );
 
 // Confirm physical paper output (stage 3 confirmation)
-apiRouter.post('/printer/jobs/:id/confirm', requireAuth, async (req: AuthRequest, res) => {
-  try {
-    const jobId = Number(req.params.id);
-    const updated = await db
-      .update(printJobs)
-      .set({
-        status: 'PRINTED',
-        spoolerAccepted: true,
-        confirmedAt: new Date().toISOString(),
-        errorMessage: null,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(printJobs.id, jobId))
-      .returning();
-    if (updated.length === 0) {
-      return res.status(404).json({ error: 'مهمة الطباعة غير موجودة' });
+apiRouter.post(
+  '/printer/jobs/:id/confirm',
+  requireAuth,
+  requireRole(['ADMIN', 'MANAGER', 'CASHIER', 'WAITER', 'KITCHEN']),
+  async (req: AuthRequest, res) => {
+    try {
+      const jobId = parsePositiveInt(req.params.id);
+      if (jobId === null) {
+        return res.status(400).json({ error: 'معرف مهمة الطباعة غير صالح' });
+      }
+      const updated = await db
+        .update(printJobs)
+        .set({
+          status: 'PRINTED',
+          spoolerAccepted: true,
+          confirmedAt: new Date().toISOString(),
+          errorMessage: null,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(printJobs.id, jobId))
+        .returning();
+      if (updated.length === 0) {
+        return res.status(404).json({ error: 'مهمة الطباعة غير موجودة' });
+      }
+      res.json({ success: true, job: updated[0] });
+    } catch (error: any) {
+      logStructuredError('CONFIRM_PRINT_JOB', error, req);
+      res.status(500).json({ error: 'فشل تأكيد الطباعة' });
     }
-    res.json({ success: true, job: updated[0] });
-  } catch (error: any) {
-    res.status(500).json({ error: sanitizeErrorMessage(error) || 'فشل تأكيد الطباعة' });
   }
-});
+);
 
 // Live Printer Diagnostics (STANDARD / ARABIC / FEED_CUT)
 apiRouter.post(
@@ -5826,10 +6564,15 @@ apiRouter.post('/system/setup-admin', async (req, res) => {
     const cleanPassword = String(password || '');
     const cleanPin = String(pin || '').trim();
 
-    if (!cleanFullName || !cleanUsername || cleanPassword.length < 8) {
+    if (!cleanFullName || !cleanUsername) {
       return res.status(400).json({
         error: 'يرجى إدخال الاسم الكامل واسم المستخدم وكلمة مرور لا تقل عن 8 أحرف',
       });
+    }
+
+    const setupPasswordCheck = validatePasswordStrength(cleanPassword, cleanUsername);
+    if (!setupPasswordCheck.valid) {
+      return res.status(400).json({ error: setupPasswordCheck.error });
     }
 
     const WEAK_PINS = new Set(['1234', '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999']);
@@ -5845,21 +6588,40 @@ apiRouter.post('/system/setup-admin', async (req, res) => {
     const pinHash = await hashPin(cleanPin);
     const uid = `admin-owner-${Date.now()}`;
 
-    const inserted = await db
-      .insert(users)
-      .values({
-        uid,
-        username: cleanUsername,
-        email: cleanEmail,
-        passwordHash,
-        pin: pinHash,
-        fullName: cleanFullName,
-        role: 'ADMIN',
-        isActive: true,
-      })
-      .returning();
+    const setupOutcome = db.transaction((tx): { kind: 'already_initialized' } | { kind: 'created'; adminUser: any } => {
+      const countInsideTx = tx
+        .select({ count: sql<number>`count(*)` })
+        .from(users)
+        .get();
+      if (Number(countInsideTx?.count || 0) > 0) {
+        return { kind: 'already_initialized' };
+      }
 
-    const adminUser = inserted[0];
+      const inserted = tx
+        .insert(users)
+        .values({
+          uid,
+          username: cleanUsername,
+          email: cleanEmail,
+          passwordHash,
+          pin: pinHash,
+          fullName: cleanFullName,
+          role: 'ADMIN',
+          isActive: true,
+        })
+        .returning()
+        .all();
+
+      return { kind: 'created', adminUser: inserted[0] };
+    });
+
+    if (setupOutcome.kind === 'already_initialized') {
+      return res.status(409).json({
+        error: 'النظام مهيأ مسبقاً بحسابات مستخدمين. يرجى تسجيل الدخول بالحساب القائم.',
+      });
+    }
+
+    const adminUser = setupOutcome.adminUser;
     const token = signUserToken({
       id: adminUser.id,
       uid: adminUser.uid,
@@ -5967,8 +6729,12 @@ apiRouter.post('/menu/reset-grine', requireAuth, requireRole(['ADMIN']), async (
 
     res.json({ success: true, message: 'تم تحديث ومزامنة قائمة Grine Restaurant بنجاح دون المساس بسجل الفواتير!' });
   } catch (error: any) {
-    console.error('Menu reset error:', sanitizeErrorMessage(error));
-    res.status(500).json({ error: error.message || 'فشل إعادة ضبط القائمة' });
+    logStructuredError('RESET_GRINE_MENU', error, req);
+    res.status(500).json({ error: 'فشل إعادة ضبط القائمة' });
   }
 });
+
+// Centralized 404 & Error Handlers for /api/* (ensures clean JSON contracts on unmatched routes or malformed requests)
+apiRouter.use(apiNotFoundHandler);
+apiRouter.use(apiErrorHandler);
 

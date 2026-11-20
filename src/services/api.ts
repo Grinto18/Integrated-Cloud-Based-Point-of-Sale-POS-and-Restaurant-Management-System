@@ -154,7 +154,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  let isUnauthorized = false;
+  let isClientHttpError = false;
   try {
     const res = await fetch(`/api${endpoint}`, {
       ...options,
@@ -162,8 +162,10 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     });
 
     if (!res.ok) {
+      if (res.status >= 400 && res.status < 500) {
+        isClientHttpError = true;
+      }
       if (res.status === 401) {
-        isUnauthorized = true;
         if (!endpoint.startsWith('/auth/login') && !endpoint.startsWith('/auth/pin-login')) {
           removeAuthToken();
           if (typeof window !== 'undefined') {
@@ -197,8 +199,11 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     if (isNetworkFailureError(error) && typeof window !== 'undefined') {
       window.dispatchEvent(new Event('pos:server-unreachable'));
     }
-    // If network error / offline (and NOT 401 Unauthorized), fallback to cache for GET requests
-    if (!isUnauthorized && (options.method === undefined || options.method === 'GET')) {
+    // Only fall back to offline cache on genuine network / 5xx unavailability — never on HTTP 4xx (400/401/403/404/409)
+    if (
+      !isClientHttpError &&
+      (options.method === undefined || options.method === 'GET')
+    ) {
       const cached = await offlineStorage.getCachedData<T>(endpoint);
       if (cached) {
         console.warn(`Serving offline cached data for /api${endpoint}`);
@@ -273,6 +278,48 @@ export const api = {
     request<any>(`/products/${id}`, { method: 'DELETE' }),
   getProductPriceHistory: (id: number) =>
     request<any[]>(`/products/${id}/price-history`),
+
+  // Add-ons (Empty by default; admin-configured global/product extras)
+  getAddons: (includeInactive = false) =>
+    request<any[]>(`/addons${includeInactive ? '?includeInactive=true' : ''}`),
+  createAddon: (data: { productId?: number | null; nameAr: string; nameFr?: string; price: number; isActive?: boolean }) =>
+    request<any>('/addons', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateAddon: (id: number, data: { nameAr?: string; nameFr?: string; price?: number; isActive?: boolean }) =>
+    request<any>(`/addons/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteAddon: (id: number) =>
+    request<any>(`/addons/${id}`, { method: 'DELETE' }),
+
+  // Official Menu Import Module (CSV / XLSX / JSON)
+  previewMenuImport: (payload: {
+    filename: string;
+    format?: 'CSV' | 'XLSX' | 'JSON';
+    content?: string;
+    contentBase64?: string;
+  }) =>
+    request<any>('/menu/import/preview', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  commitMenuImport: (payload: {
+    filename: string;
+    format?: 'CSV' | 'XLSX' | 'JSON';
+    content?: string;
+    contentBase64?: string;
+    confirmed: boolean;
+    rejectOnDuplicates?: boolean;
+  }) =>
+    request<any>('/menu/import/commit', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getMenuImportHistory: (limit = 30) =>
+    request<any[]>(`/menu/import/history?limit=${limit}`),
 
   // Tables
   getTables: () => request<any[]>('/tables'),

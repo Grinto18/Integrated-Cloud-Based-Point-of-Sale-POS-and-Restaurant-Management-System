@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -281,7 +281,7 @@ export interface PosUser {
   username: string;
   email: string;
   fullName: string;
-  role: 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN' | 'INVENTORY';
+  role: 'OWNER' | 'ADMIN' | 'MANAGER' | 'CASHIER' | 'WAITER' | 'KITCHEN' | 'INVENTORY';
   phone?: string | null;
 }
 
@@ -422,7 +422,7 @@ export const requireRole = (allowedRoles: string[]) => {
     if (!req.user) {
       return res.status(401).json({ error: 'يرجى تسجيل الدخول أولاً' });
     }
-    if (req.user.role === 'ADMIN' || allowedRoles.includes(req.user.role)) {
+    if (req.user.role === 'ADMIN' || req.user.role === 'OWNER' || allowedRoles.includes(req.user.role)) {
       return next();
     }
     return res.status(403).json({ error: 'عذراً، ليس لديك صلاحية للقيام بهذه العملية' });

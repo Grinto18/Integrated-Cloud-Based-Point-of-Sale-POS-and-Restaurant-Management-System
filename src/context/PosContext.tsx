@@ -100,6 +100,8 @@ interface PosContextType {
   refreshDashboard: () => Promise<void>;
   refreshSettings: () => Promise<void>;
   refreshOfflineCount: () => Promise<void>;
+  catalogVersion: number;
+  refreshCatalog: () => Promise<void>;
   checkConnectionNow: () => Promise<boolean>;
   triggerSync: (force?: boolean, includeFailed?: boolean) => Promise<SyncQueueResult>;
   retrySyncItem: (entityType: 'ORDER' | 'PAYMENT' | 'CASH_MOVEMENT', id: string) => Promise<SyncQueueResult>;
@@ -133,6 +135,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [notes, setNotes] = useState<string>('');
   const [taxRate, setTaxRate] = useState<number>(0);
   const [settings, setSettings] = useState<Record<string, string>>({});
+  const [catalogVersion, setCatalogVersion] = useState<number>(0);
+
+  const refreshCatalog = useCallback(async () => {
+    setCatalogVersion((v) => v + 1);
+  }, []);
 
   const [currentShift, setCurrentShift] = useState<CashShift | null>(null);
   const [isShiftOpen, setIsShiftOpen] = useState<boolean>(false);
@@ -569,9 +576,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     quantity: number = 1
   ) => {
     const basePrice = Number(product.price);
-    const variantAdj = variant ? Number(variant.priceAdjustment) : 0;
+    const resolvedBaseWithVariant =
+      variant && variant.price !== null && variant.price !== undefined
+        ? Number(variant.price)
+        : basePrice + (variant ? Number(variant.priceAdjustment) : 0);
     const addonsTotal = addons.reduce((sum, a) => sum + Number(a.price), 0);
-    const unitPrice = basePrice + variantAdj + addonsTotal;
+    const unitPrice = resolvedBaseWithVariant + addonsTotal;
 
     const existingIndex = cart.findIndex((item) => {
       if (item.productId !== product.id) return false;
@@ -823,6 +833,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refreshDashboard,
         refreshSettings,
         refreshOfflineCount,
+        catalogVersion,
+        refreshCatalog,
         checkConnectionNow,
         triggerSync,
         retrySyncItem,

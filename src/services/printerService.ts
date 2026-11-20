@@ -584,6 +584,7 @@ export const printerService = {
             copies: numCopies,
             printJobId: jobKey,
             isReprint,
+            rawBase64,
             payloadPreview,
             clientHandled,
             clientError,
@@ -612,9 +613,9 @@ export const printerService = {
           method: 'BROWSER',
           status: 'PRINTED',
           spoolerAccepted: true,
-          hardwareConfirmed: Boolean(window.goldenPalaceDesktop?.printSilent),
+          hardwareConfirmed: false,
           message: window.goldenPalaceDesktop?.printSilent
-            ? `تم إرسال الوصل مباشرة عبر طابعة Windows (${profile.printerName}).`
+            ? `تم إرسال الوصل إلى نظام الطباعة في Windows (${profile.printerName}) — بانتظار تأكيد خروج الورقة.`
             : `تم فتح نافذة الطباعة الحرارية بنجاح (${numCopies} نسخة).`,
           timestamp: new Date().toISOString(),
         };
@@ -669,8 +670,8 @@ export const printerService = {
           method: 'USB',
           status: 'PRINTED',
           spoolerAccepted: true,
-          hardwareConfirmed: true,
-          message: 'تم إرسال الوصل مباشرة عبر منفذ USB بنجاح.',
+          hardwareConfirmed: false,
+          message: 'تم إرسال بيانات الوصل عبر منفذ USB — بانتظار تأكيد خروج الورقة مادياً.',
           timestamp: new Date().toISOString(),
         };
       }

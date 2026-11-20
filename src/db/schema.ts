@@ -36,33 +36,42 @@ export const products = sqliteTable('products', {
   nameAr: text('name_ar').notNull(),
   nameFr: text('name_fr'),
   nameEn: text('name_en'),
+  sku: text('sku'),
+  subcategoryAr: text('subcategory_ar'),
+  subcategoryFr: text('subcategory_fr'),
   description: text('description'),
   price: numeric('price').notNull(),
   costPrice: numeric('cost_price').notNull().default('0'),
   image: text('image'),
   barcode: text('barcode'),
   isAvailable: integer('is_available', { mode: 'boolean' }).notNull().default(true),
+  isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
   station: text('station').notNull().default('MAIN_KITCHEN'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   updatedAt: text('updated_at').default(sql`(datetime('now'))`),
 });
 
-// 4. Product Variants (e.g., Small, Medium, Large)
+// 4. Product Variants (e.g., L, XL for Pizzas)
 export const productVariants = sqliteTable('product_variants', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   productId: integer('product_id').references(() => products.id).notNull(),
   nameAr: text('name_ar').notNull(),
   nameFr: text('name_fr'),
+  price: integer('price'),
   priceAdjustment: numeric('price_adjustment').notNull().default('0'),
+  sku: text('sku'),
+  isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
 });
 
-// 5. Product Add-ons (e.g., Extra Cheese, Sauce, Fries)
+// 5. Product Add-ons (Empty by default; admin-configured global or product-level extras)
 export const productAddons = sqliteTable('product_addons', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   productId: integer('product_id').references(() => products.id),
   nameAr: text('name_ar').notNull(),
   nameFr: text('name_fr'),
   price: numeric('price').notNull().default('0'),
+  isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
 });
 
 // 6. Price History Audit
@@ -111,6 +120,11 @@ export const orders = sqliteTable('orders', {
   status: text('status').notNull().default('NEW'), // NEW, CONFIRMED, PREPARING, READY, COMPLETED, CANCELLED
   subtotal: numeric('subtotal').notNull().default('0'),
   discount: numeric('discount').notNull().default('0'),
+  discountType: text('discount_type'), // FIXED, PERCENT
+  discountValue: numeric('discount_value').default('0'),
+  discountReason: text('discount_reason'),
+  discountAuthorizedBy: integer('discount_authorized_by').references(() => users.id),
+  discountAuthorizedAt: text('discount_authorized_at'),
   deliveryFee: numeric('delivery_fee').notNull().default('0'),
   taxRate: numeric('tax_rate').notNull().default('0'),
   taxAmount: numeric('tax_amount').notNull().default('0'),
@@ -326,6 +340,8 @@ export const auditLogs = sqliteTable('audit_logs', {
   entityType: text('entity_type'),
   entityId: text('entity_id'),
   details: text('details'),
+  previousValue: text('previous_value'),
+  newValue: text('new_value'),
   ipAddress: text('ip_address'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 });
@@ -401,5 +417,25 @@ export const syncConflicts = sqliteTable('sync_conflicts', {
   resolvedAt: text('resolved_at'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 });
+
+// 29. Menu Import History (Audited CSV / Excel / JSON Menu Imports)
+export const menuImportHistory = sqliteTable('menu_import_history', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  filename: text('filename').notNull(),
+  fileFormat: text('file_format').notNull(), // CSV, XLSX, JSON
+  categoriesCount: integer('categories_count').notNull().default(0),
+  productsCount: integer('products_count').notNull().default(0),
+  variantsCount: integer('variants_count').notNull().default(0),
+  validCount: integer('valid_count').notNull().default(0),
+  duplicateCount: integer('duplicate_count').notNull().default(0),
+  invalidCount: integer('invalid_count').notNull().default(0),
+  status: text('status').notNull().default('COMPLETED'), // COMPLETED, FAILED, ROLLED_BACK
+  backupFilename: text('backup_filename'),
+  backupPath: text('backup_path'),
+  summaryJson: text('summary_json'),
+  importedBy: integer('imported_by').references(() => users.id),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+});
+
 
 

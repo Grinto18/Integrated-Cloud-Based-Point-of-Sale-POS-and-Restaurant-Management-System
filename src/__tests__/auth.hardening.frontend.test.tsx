@@ -255,4 +255,69 @@ describe('Golden Palace POS — Frontend Auth Hardening Tests', () => {
     expect(screen.getByText('•••• (مفعّل)')).toBeInTheDocument();
     expect(screen.getByText('—')).toBeInTheDocument();
   });
+
+  it('Phase 12-C: initializes LoginModal with empty credentials, never renders default PIN hints, and preserves SETUP_ADMIN flow', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('GOLDEN PALACE POS')).toBeInTheDocument();
+    });
+
+    // No default PIN hints anywhere in PIN mode
+    expect(screen.queryByText(/PIN الافتراضي|PIN par défaut/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('1234')).not.toBeInTheDocument();
+    expect(screen.queryByText('1111')).not.toBeInTheDocument();
+
+    // Switch to Password mode -> identifier and password MUST both be empty
+    fireEvent.click(screen.getByText(/تسجيل الدخول باسم المستخدم وكلمة المرور/));
+    const textInputs = document.querySelectorAll('input[type="text"]');
+    const passInputs = document.querySelectorAll('input[type="password"]');
+    expect((textInputs[0] as HTMLInputElement).value).toBe('');
+    expect((passInputs[0] as HTMLInputElement).value).toBe('');
+    expect(document.body.innerHTML).not.toContain('admin123');
+
+    // Now simulate desktop mode with pending / resolved getFirstRunStatus -> still zero flash of default hints, transitions cleanly to SETUP_ADMIN
+    cleanup();
+    let resolveFirstRun!: (res: Response) => void;
+    const deferredFirstRun = new Promise<Response>((res) => {
+      resolveFirstRun = res;
+    });
+    vi.stubGlobal('goldenPalaceDesktop', { isDesktop: true });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url === '/api/system/first-run-status') return deferredFirstRun;
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      })
+    );
+
+    render(<App />);
+    // Synchronously while async first-run check is still pending: zero PIN hints or prefilled secrets
+    expect(screen.queryByText(/PIN الافتراضي|PIN par défaut/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('1234')).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirstRun(
+        new Response(
+          JSON.stringify({
+            needsInitialAdminSetup: true,
+            isDesktop: true,
+            isProductionMode: true,
+            usersCount: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/التشغيل الأول للنظام/)).toBeInTheDocument();
+    });
+    const setupInputs = Array.from(document.querySelectorAll('input')).map((el) => el.value);
+    expect(setupInputs.every((v) => v === '')).toBe(true);
+  });
 });
+

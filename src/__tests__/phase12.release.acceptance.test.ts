@@ -69,9 +69,11 @@ describe('Golden Palace POS — Phase 12 Windows Desktop Release & Acceptance Te
 
     expect(yml).toContain('target: nsis');
     expect(yml).toContain('- x64');
-    expect(yml).toContain('artifactName: GOLDEN-PALACE-POS-Setup-${version}-${arch}.${ext}');
+    expect(yml).toContain('artifactName: GoldenPalacePOS-Setup-${arch}.${ext}');
     expect(yml).toContain('deleteAppDataOnUninstall: false');
     expect(yml).toContain('npmRebuild: true');
+    expect(yml).toContain('dist/**/*');
+    expect(yml).toContain('dist-electron/**/*');
     expect(yml).toContain('node_modules/better-sqlite3/**/*');
     expect(yml).toContain('node_modules/bindings/**/*');
     expect(yml).toContain('icon: build/icon.ico');
@@ -99,7 +101,7 @@ describe('Golden Palace POS — Phase 12 Windows Desktop Release & Acceptance Te
     // GitHub Actions Windows runner workflow validation
     expect(workflow).toContain('runs-on: windows-latest');
     expect(workflow).toContain('electron-rebuild -f -w better-sqlite3 -v 22.3.27');
-    expect(workflow).toContain('GOLDEN-PALACE-POS-Setup-1.0.0-x64.exe');
+    expect(workflow).toContain('GoldenPalacePOS-Setup-x64.exe');
 
     // Electron userData path & production DB separation
     expect(mainCjs).toContain("app.setName('Golden Palace POS')");

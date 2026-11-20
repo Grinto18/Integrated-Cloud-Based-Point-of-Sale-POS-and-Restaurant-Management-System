@@ -30,6 +30,7 @@ const ReportsView = lazy(() => import('./components/ReportsView.tsx').then((m) =
 const AuditLogView = lazy(() => import('./components/AuditLogView.tsx').then((m) => ({ default: m.AuditLogView })));
 const SettingsModal = lazy(() => import('./components/SettingsModal.tsx').then((m) => ({ default: m.SettingsModal })));
 const SyncCenter = lazy(() => import('./components/SyncCenter.tsx').then((m) => ({ default: m.SyncCenter })));
+const MenuImportView = lazy(() => import('./components/MenuImportView.tsx').then((m) => ({ default: m.MenuImportView })));
 
 const MainAppContent: React.FC = () => {
   const { user, isLocked, isLoading } = useAuth();
@@ -408,7 +409,12 @@ const MainAppContent: React.FC = () => {
                 )}
                 {activeTab === 'kitchen' && <KitchenDisplay />}
                 {activeTab === 'sync' && <SyncCenter />}
-                {activeTab === 'menu' && <MenuManagement />}
+                {activeTab === 'menu' && (
+                  <MenuManagement onOpenMenuImport={() => setActiveTab('menu-import')} />
+                )}
+                {activeTab === 'menu-import' && (
+                  <MenuImportView onBackToMenu={() => setActiveTab('menu')} />
+                )}
                 {activeTab === 'inventory' && <InventoryManager />}
                 {activeTab === 'waste' && <WasteManager />}
                 {activeTab === 'purchases' && <PurchasesManager />}

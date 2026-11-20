@@ -83,6 +83,51 @@ export function getBackupDirectory(): string {
   return backupDir;
 }
 
+export const CONFIRMED_DB_PATH_ENV = 'GOLDEN_PALACE_CONFIRMED_DB_PATH';
+
+export interface CanonicalDatabasePolicy {
+  environment: 'desktop_production' | 'server_production' | 'development';
+  platform: string;
+  isProductionMode: boolean;
+  isDesktopMode: boolean;
+  isCustomOverride: boolean;
+  appDataDir: string;
+  authoritativeDbPath: string;
+  authoritativeDbFilename: string;
+  backupDir: string;
+  devDbFilename: string;
+  productionDbFilename: string;
+  confirmedDbPath: string | null;
+}
+
+export function resolveCanonicalDatabasePolicy(): CanonicalDatabasePolicy {
+  const isDesktopMode = process.env.GOLDEN_PALACE_DESKTOP === '1';
+  const isProductionMode = isProductionDatabaseMode();
+  const isCustomOverride = Boolean(process.env.SQLITE_DB_PATH?.trim());
+  const authoritativeDbPath = getLocalDatabasePath();
+  const backupDir = getBackupDirectory();
+  const confirmedRaw = process.env[CONFIRMED_DB_PATH_ENV]?.trim();
+
+  return {
+    environment: isDesktopMode
+      ? 'desktop_production'
+      : isProductionMode
+      ? 'server_production'
+      : 'development',
+    platform: process.platform,
+    isProductionMode,
+    isDesktopMode,
+    isCustomOverride,
+    appDataDir: path.dirname(authoritativeDbPath),
+    authoritativeDbPath,
+    authoritativeDbFilename: path.basename(authoritativeDbPath),
+    backupDir,
+    devDbFilename: DEV_DB_FILENAME,
+    productionDbFilename: PRODUCTION_DB_FILENAME,
+    confirmedDbPath: confirmedRaw ? path.resolve(confirmedRaw) : null,
+  };
+}
+
 export function getDesktopStoragePaths(): {
   platform: string;
   appDataDir: string;
