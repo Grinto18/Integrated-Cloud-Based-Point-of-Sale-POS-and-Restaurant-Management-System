@@ -2,6 +2,12 @@ name: Build Windows x64 Desktop Installer
 
 on:
   workflow_dispatch:
+    inputs:
+      stop_before_packaging:
+        description: 'Stop after Windows desktop build, TypeScript lint, and tests (skip NSIS packaging until owner review)'
+        required: false
+        default: true
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -25,7 +31,7 @@ jobs:
           architecture: 'x64'
           cache: 'npm'
 
-      - name: Initialize CI log directory & verify Windows MSVC C++20 toolchain
+      - name: Initialize CI log directory, audit workflow revision & verify Windows MSVC C++20 toolchain
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "release\ci-logs" | Out-Null
@@ -38,18 +44,27 @@ jobs:
           if (-not $msvcPath) {
             throw "Windows MSVC C++ Build Tools not detected on runner; required to compile better-sqlite3 (C++20) for Electron ABI 110."
           }
+          $preCiNodeModulesExists = Test-Path "node_modules"
+          $pkgSha256 = (Get-FileHash "package.json" -Algorithm SHA256).Hash.ToLower()
+          $lockSha256 = (Get-FileHash "package-lock.json" -Algorithm SHA256).Hash.ToLower()
           @(
-            "Runner OS      : $($env:RUNNER_OS)",
-            "Runner Arch    : $($env:RUNNER_ARCH)",
-            "Node.js        : $(node -v)",
-            "npm            : $(npm -v)",
-            "Python         : $(python --version 2>&1)",
-            "Visual Studio  : $msvcPath",
-            "GitHub Run ID  : $($env:GITHUB_RUN_ID)",
-            "GitHub Run Num : $($env:GITHUB_RUN_NUMBER)",
-            "GitHub Ref     : $($env:GITHUB_REF_NAME)",
-            "GitHub SHA     : $($env:GITHUB_SHA)",
-            "Timestamp UTC  : $((Get-Date).ToUniversalTime().ToString('o'))"
+            "Runner OS              : $($env:RUNNER_OS)",
+            "Runner Arch            : $($env:RUNNER_ARCH)",
+            "Working Directory      : $((Get-Location).Path)",
+            "Pre-CI node_modules    : $preCiNodeModulesExists (expected False — clean checkout)",
+            "Node.js                : $(node -v)",
+            "npm                    : $(npm -v)",
+            "Python                 : $(python --version 2>&1)",
+            "Visual Studio          : $msvcPath",
+            "GitHub Run ID          : $($env:GITHUB_RUN_ID)",
+            "GitHub Run Num         : $($env:GITHUB_RUN_NUMBER)",
+            "GitHub Ref             : $($env:GITHUB_REF)",
+            "GitHub SHA             : $($env:GITHUB_SHA)",
+            "GitHub Workflow Ref    : $($env:GITHUB_WORKFLOW_REF)",
+            "package.json SHA256    : $pkgSha256",
+            "package-lock SHA256    : $lockSha256",
+            "Stop Before Packaging  : ${{ inputs.stop_before_packaging }}",
+            "Timestamp UTC          : $((Get-Date).ToUniversalTime().ToString('o'))"
           ) | Tee-Object -FilePath $log
 
       - name: Install pinned dependencies from package-lock.json (including optional native bindings)
@@ -60,105 +75,22 @@ jobs:
           npm ci --include=optional --legacy-peer-deps --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\00b-npm-ci.log"
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
 
-      - name: Mandatory Windows Rolldown Native Binding Diagnostics & Pinned Version Gate
+      - name: Mandatory Rolldown Diagnostics, Controlled Windows-Only Fallback & 5-Condition Hard Gate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $PSNativeCommandUseErrorActionPreference = $false
           $diagLog = "release\ci-logs\00c-rolldown-diagnostics.log"
           $envLog = "release\ci-logs\00-environment.log"
-          $diagFailed = $false
-          $failureCase = "NONE"
+          $bindingDir = "node_modules\@rolldown\binding-win32-x64-msvc"
+          $bindingPkgPath = "$bindingDir\package.json"
+          $bindingBinPath = "$bindingDir\rolldown-binding.win32-x64-msvc.node"
 
           function Log-Diag([string]$msg) {
             $msg | Tee-Object -FilePath $diagLog -Append
           }
 
-          Log-Diag "=== MANDATORY WINDOWS ROLLDOWN NATIVE BINDING DIAGNOSTICS ==="
-          Log-Diag "Timestamp UTC       : $((Get-Date).ToUniversalTime().ToString('o'))"
-          Log-Diag "Node / npm          : $(node -v) / $(npm -v)"
-          Log-Diag "package-lock SHA256 : $((Get-FileHash 'package-lock.json' -Algorithm SHA256).Hash.ToLower())"
-          Log-Diag "npm config omit     : $(npm config get omit)"
-          Log-Diag "npm config include  : $(npm config get include)"
-          Log-Diag "npm config os / cpu : $(npm config get os) / $(npm config get cpu)"
-          Log-Diag "npm legacy-peer-deps: $(npm config get legacy-peer-deps)"
-
-          # Verify lockfile itself contains the Windows Rolldown binding entry
-          $lockCheck = node -e "const l=JSON.parse(require('fs').readFileSync('package-lock.json','utf8')); const e=l.packages['node_modules/@rolldown/binding-win32-x64-msvc']; console.log(e ? JSON.stringify({version:e.version,os:e.os,cpu:e.cpu,optional:e.optional,hasResolved:Boolean(e.resolved),hasIntegrity:Boolean(e.integrity)}) : 'MISSING_IN_LOCKFILE');" 2>&1
-          Log-Diag "lockfile entry      : $lockCheck"
-
-          $bindingDir = "node_modules\@rolldown\binding-win32-x64-msvc"
-          $bindingPkgPath = "$bindingDir\package.json"
-          $bindingBinPath = "$bindingDir\rolldown-binding.win32-x64-msvc.node"
-
-          # Diagnostic 1: Directory existence
-          $dirExists = Test-Path $bindingDir
-          Log-Diag "[1/8] Binding directory exists ($bindingDir): $dirExists"
-
-          # Diagnostic 2 & 3 & 6: package.json existence, exact version 1.2.11, OS/CPU metadata
-          $pkgExists = Test-Path $bindingPkgPath
-          Log-Diag "[2/8] Binding package.json exists: $pkgExists"
-          $installedVer = "MISSING"
-          $pkgOs = "MISSING"
-          $pkgCpu = "MISSING"
-          $pkgMain = "MISSING"
-          if ($pkgExists) {
-            try {
-              $pkgObj = Get-Content $bindingPkgPath -Raw | ConvertFrom-Json
-              $installedVer = $pkgObj.version
-              $pkgOs = ($pkgObj.os -join ",")
-              $pkgCpu = ($pkgObj.cpu -join ",")
-              $pkgMain = $pkgObj.main
-            } catch {
-              $installedVer = "CORRUPT_JSON: $($_.Exception.Message)"
-            }
-          }
-          Log-Diag "[3/8] Installed version (expected 1.2.11): $installedVer | main=$pkgMain"
-          Log-Diag "[6/8] Package OS/CPU metadata (expected win32/x64): os=[$pkgOs] cpu=[$pkgCpu]"
-
-          # Diagnostic 4 & 8: Native .node binary existence, file listing, size, PE32+ header & SHA-256
-          $binExists = Test-Path $bindingBinPath
-          Log-Diag "[4/8] Native .node binary exists ($bindingBinPath): $binExists"
-          if ($dirExists) {
-            Log-Diag "[8/8] Binding package directory contents:"
-            Get-ChildItem -Path $bindingDir -Force | ForEach-Object {
-              $itemHash = if (-not $_.PSIsContainer) { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() } else { "DIR" }
-              Log-Diag ("      - {0} ({1} bytes) SHA256={2}" -f $_.Name, $_.Length, $itemHash)
-            }
-          } else {
-            Log-Diag "[8/8] Binding package directory missing; cannot inspect contents."
-          }
-
-          $binPeValid = $false
-          if ($binExists) {
-            $bBytes = [System.IO.File]::ReadAllBytes($bindingBinPath)
-            if ($bBytes.Length -ge 64 -and $bBytes[0] -eq 0x4D -and $bBytes[1] -eq 0x5A) {
-              $bPeOffset = [System.BitConverter]::ToInt32($bBytes, 0x3C)
-              $bMachine = [System.BitConverter]::ToUInt16($bBytes, $bPeOffset + 4)
-              $binPeValid = ($bMachine -eq 0x8664)
-              Log-Diag ("      Native binary PE check: MZ=true Machine=0x{0:X4} Size={1} bytes (expected PE32+ 0x8664)" -f $bMachine, $bBytes.Length)
-            } else {
-              Log-Diag ("      Native binary PE check: INVALID (missing MZ header, Size={0} bytes)" -f $bBytes.Length)
-            }
-          }
-
-          # Diagnostic 7: npm ls report
-          Log-Diag "[7/8] npm ls @rolldown/binding-win32-x64-msvc --all:"
-          $npmLsOut = npm ls @rolldown/binding-win32-x64-msvc --all 2>&1
-          $npmLsExit = $LASTEXITCODE
-          foreach ($line in $npmLsOut) { Log-Diag "      $line" }
-          Log-Diag "      npm ls exit code: $npmLsExit"
-
-          # Loader inspection: rolldown/dist/shared/binding-*.mjs
-          $loaderFiles = Get-ChildItem -Path "node_modules\rolldown\dist\shared" -Filter "binding-*.mjs" -ErrorAction SilentlyContinue
-          foreach ($lf in $loaderFiles) {
-            Log-Diag "Loader file inspected: $($lf.FullName)"
-          }
-
-          # Diagnostic 5: Node.js resolution & direct native module load test (captures full Error.cause chain)
-          Log-Diag "[5/8] Node.js runtime, resolution & direct native binding load test:"
-          $nodeDiagScript = @'
-          const path = require("node:path");
+          $nodeProbeScript = @'
           console.log("Runtime:", JSON.stringify({
             platform: process.platform,
             arch: process.arch,
@@ -176,88 +108,245 @@ jobs:
               depth++;
             }
           };
-          let failed = false;
+          let resolveOk = false;
+          let loadOk = false;
           try {
             const resolvedPkg = require.resolve("@rolldown/binding-win32-x64-msvc/package.json");
             const resolvedMain = require.resolve("@rolldown/binding-win32-x64-msvc");
-            console.log("require.resolve(package.json):", resolvedPkg);
-            console.log("require.resolve(main):", resolvedMain);
+            console.log("RESOLVE_OK package.json =", resolvedPkg);
+            console.log("RESOLVE_OK main =", resolvedMain);
+            resolveOk = true;
           } catch (err) {
-            failed = true;
             dumpErr("RESOLVE_ERROR", err);
           }
           try {
             const mod = require("@rolldown/binding-win32-x64-msvc");
-            console.log("Direct require(@rolldown/binding-win32-x64-msvc): OK, export keys =", Object.keys(mod).length);
+            console.log("DIRECT_LOAD_OK export keys =", Object.keys(mod).length);
+            loadOk = true;
           } catch (err) {
-            failed = true;
             dumpErr("DIRECT_LOAD_ERROR", err);
           }
           (async () => {
+            let rolldownImportOk = false;
             try {
               const rd = await import("rolldown");
-              console.log("ESM import(rolldown): OK, VERSION =", rd.VERSION || "loaded");
+              console.log("ROLLDOWN_IMPORT_OK VERSION =", rd.VERSION || "loaded");
+              rolldownImportOk = true;
             } catch (err) {
-              failed = true;
               dumpErr("ROLLDOWN_IMPORT_ERROR", err);
             }
-            process.exit(failed ? 1 : 0);
+            console.log("PROBE_SUMMARY=" + JSON.stringify({ resolveOk, loadOk, rolldownImportOk }));
+            process.exit(resolveOk && loadOk && rolldownImportOk ? 0 : 1);
           })();
           '@
-          $nodeDiagOut = node -e $nodeDiagScript 2>&1
-          $nodeDiagExit = $LASTEXITCODE
-          foreach ($line in $nodeDiagOut) { Log-Diag "      $line" }
-          Log-Diag "      Node.js resolution & load exit code: $nodeDiagExit"
 
-          # Classify Case A / B / C explicitly
-          if (-not $dirExists -or -not $pkgExists) {
-            $failureCase = "CASE_A_PACKAGE_MISSING_AFTER_NPM_CI"
-            $diagFailed = $true
-          } elseif (-not $binExists -or -not $binPeValid) {
-            $failureCase = "CASE_B_PACKAGE_EXISTS_BINARY_MISSING_OR_CORRUPT"
-            $diagFailed = $true
-          } elseif ($installedVer -ne "1.2.11" -or $pkgOs -ne "win32" -or $pkgCpu -ne "x64") {
-            $failureCase = "CASE_B_METADATA_OR_VERSION_MISMATCH"
-            $diagFailed = $true
-          } elseif ($nodeDiagExit -ne 0) {
-            $failureCase = "CASE_C_BINARY_EXISTS_NATIVE_LOAD_FAILED"
-            $diagFailed = $true
+          function Invoke-RolldownBindingCheck([string]$Phase) {
+            Log-Diag ""
+            Log-Diag "=== ROLLDOWN BINDING DIAGNOSTICS [$Phase] ==="
+            $dirExists = Test-Path $bindingDir
+            $pkgExists = Test-Path $bindingPkgPath
+            $binExists = Test-Path $bindingBinPath
+            $installedVer = "MISSING"
+            $pkgOs = "MISSING"
+            $pkgCpu = "MISSING"
+            $pkgMain = "MISSING"
+            if ($pkgExists) {
+              try {
+                $pkgObj = Get-Content $bindingPkgPath -Raw | ConvertFrom-Json
+                $installedVer = "$($pkgObj.version)"
+                $pkgOs = ($pkgObj.os -join ",")
+                $pkgCpu = ($pkgObj.cpu -join ",")
+                $pkgMain = "$($pkgObj.main)"
+              } catch {
+                $installedVer = "CORRUPT_JSON: $($_.Exception.Message)"
+              }
+            }
+
+            Log-Diag "[$Phase] 1. Binding directory exists ($bindingDir): $dirExists"
+            Log-Diag "[$Phase] 2. Binding package.json exists: $pkgExists | version=$installedVer | main=$pkgMain | os=[$pkgOs] | cpu=[$pkgCpu]"
+            Log-Diag "[$Phase] 3. Native .node binary exists ($bindingBinPath): $binExists"
+
+            $binPeValid = $false
+            $binSize = 0
+            if ($dirExists) {
+              Log-Diag "[$Phase]    Directory contents:"
+              Get-ChildItem -Path $bindingDir -Force | ForEach-Object {
+                $itemHash = if (-not $_.PSIsContainer) { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() } else { "DIR" }
+                Log-Diag ("             - {0} ({1} bytes) SHA256={2}" -f $_.Name, $_.Length, $itemHash)
+              }
+            }
+            if ($binExists) {
+              $bBytes = [System.IO.File]::ReadAllBytes($bindingBinPath)
+              $binSize = $bBytes.Length
+              if ($bBytes.Length -ge 64 -and $bBytes[0] -eq 0x4D -and $bBytes[1] -eq 0x5A) {
+                $bPeOffset = [System.BitConverter]::ToInt32($bBytes, 0x3C)
+                $bMachine = [System.BitConverter]::ToUInt16($bBytes, $bPeOffset + 4)
+                $binPeValid = ($bMachine -eq 0x8664)
+                Log-Diag ("[$Phase]    PE header check: MZ=true Machine=0x{0:X4} Size={1} bytes (expected PE32+ 0x8664)" -f $bMachine, $bBytes.Length)
+              } else {
+                Log-Diag ("[$Phase]    PE header check: INVALID (Size={0} bytes)" -f $bBytes.Length)
+              }
+            }
+
+            Log-Diag "[$Phase] 4. npm ls @rolldown/binding-win32-x64-msvc --all:"
+            $npmLsOut = npm ls @rolldown/binding-win32-x64-msvc --all 2>&1
+            $npmLsExit = $LASTEXITCODE
+            foreach ($line in $npmLsOut) { Log-Diag "             $line" }
+            Log-Diag "[$Phase]    npm ls exit code: $npmLsExit"
+
+            Log-Diag "[$Phase] 5. Node.js require.resolve & direct native load:"
+            $probeOut = node -e $nodeProbeScript 2>&1
+            $probeExit = $LASTEXITCODE
+            $resolveOk = $false
+            $loadOk = $false
+            $rolldownImportOk = $false
+            foreach ($line in $probeOut) {
+              $s = "$line"
+              Log-Diag "             $s"
+              if ($s -like "PROBE_SUMMARY=*") {
+                $summaryObj = ($s.Substring("PROBE_SUMMARY=".Length)) | ConvertFrom-Json
+                $resolveOk = [bool]$summaryObj.resolveOk
+                $loadOk = [bool]$summaryObj.loadOk
+                $rolldownImportOk = [bool]$summaryObj.rolldownImportOk
+              }
+            }
+            Log-Diag "[$Phase]    Node probe exit code: $probeExit"
+
+            return [PSCustomObject]@{
+              Phase = $Phase
+              DirExists = $dirExists
+              PkgExists = $pkgExists
+              VersionExact = ($installedVer -eq "1.2.11")
+              InstalledVersion = $installedVer
+              BinExists = $binExists
+              BinPeValid = $binPeValid
+              BinSize = $binSize
+              ResolveOk = $resolveOk
+              LoadOk = $loadOk
+              RolldownImportOk = $rolldownImportOk
+              AllPassed = ($dirExists -and $pkgExists -and ($installedVer -eq "1.2.11") -and $binExists -and $binPeValid -and $resolveOk -and $loadOk -and $rolldownImportOk)
+            }
           }
-          Log-Diag "DIAGNOSTIC CLASSIFICATION: $failureCase"
 
-          if ($diagFailed) {
-            # Also attach filtered npm debug log clues (zero secrets)
+          # Section 2 & 3: Record workflow revision, working dir, manifest & lockfile optionalDependencies
+          $pkgShaBefore = (Get-FileHash "package.json" -Algorithm SHA256).Hash.ToLower()
+          $lockShaBefore = (Get-FileHash "package-lock.json" -Algorithm SHA256).Hash.ToLower()
+          Log-Diag "=== WORKFLOW REVISION & MANIFEST AUDIT ==="
+          Log-Diag "Timestamp UTC         : $((Get-Date).ToUniversalTime().ToString('o'))"
+          Log-Diag "Runner OS / Arch      : $($env:RUNNER_OS) / $($env:RUNNER_ARCH)"
+          Log-Diag "GitHub SHA / Ref      : $($env:GITHUB_SHA) / $($env:GITHUB_REF)"
+          Log-Diag "GitHub Workflow Ref   : $($env:GITHUB_WORKFLOW_REF)"
+          Log-Diag "Working Directory     : $((Get-Location).Path)"
+          Log-Diag "Node / npm            : $(node -v) / $(npm -v)"
+          Log-Diag "package.json SHA256   : $pkgShaBefore"
+          Log-Diag "package-lock SHA256   : $lockShaBefore"
+          Log-Diag "npm config omit       : $(npm config get omit)"
+          Log-Diag "npm config include    : $(npm config get include)"
+          Log-Diag "npm config os / cpu   : $(npm config get os) / $(npm config get cpu)"
+
+          $manifestAudit = node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); const l=JSON.parse(fs.readFileSync('package-lock.json','utf8')); console.log(JSON.stringify({ pkgOptionalDeps: p.optionalDependencies || null, lockRootOptionalDeps: l.packages['']?.optionalDependencies || null, lockWinBindingEntry: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'] ? { version: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].version, os: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].os, cpu: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].cpu, optional: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].optional, dev: l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].dev || false, hasResolved: Boolean(l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].resolved), hasIntegrity: Boolean(l.packages['node_modules/@rolldown/binding-win32-x64-msvc'].integrity) } : null }));" 2>&1
+          Log-Diag "Manifest & Lockfile   : $manifestAudit"
+
+          # Initial Post-npm-ci Diagnostics
+          $result = Invoke-RolldownBindingCheck -Phase "POST-NPM-CI"
+
+          # Inspect npm logs for optional dependency failures whenever initial check did not pass
+          if (-not $result.AllPassed) {
+            Log-Diag ""
+            Log-Diag "=== FILTERED NPM LOGS FOR OPTIONAL DEPENDENCY FAILURES ==="
+            if (Test-Path "release\ci-logs\00b-npm-ci.log") {
+              Select-String -Path "release\ci-logs\00b-npm-ci.log" -Pattern "rolldown|optional|EBADPLATFORM|EINTEGRITY|ERR!|warn" | Select-Object -First 40 | ForEach-Object {
+                Log-Diag "  [00b-npm-ci.log] $($_.Line)"
+              }
+            }
             $npmLogsDir = Join-Path $env:LOCALAPPDATA "npm-cache\_logs"
             if (Test-Path $npmLogsDir) {
               $latestLog = Get-ChildItem $npmLogsDir -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
               if ($latestLog) {
-                Log-Diag "Filtered npm debug log lines ($($latestLog.Name)):"
+                Log-Diag "  Latest npm cache log: $($latestLog.Name)"
                 Select-String -Path $latestLog.FullName -Pattern "rolldown|optional|EBADPLATFORM|EINTEGRITY|failed optional" | Select-Object -First 40 | ForEach-Object {
-                  Log-Diag "      $($_.Line)"
+                  Log-Diag "  [$($latestLog.Name)] $($_.Line)"
                 }
               }
             }
-            throw "ROLLDOWN WINDOWS BINDING DIAGNOSTIC FAILED [$failureCase]. Inspect release\ci-logs\00c-rolldown-diagnostics.log for complete evidence."
           }
 
+          # Section 4: Controlled Windows-Only Installation Fallback (ONLY if binding is absent after npm ci)
+          $fallbackAttempted = $false
+          if (($env:RUNNER_OS -eq 'Windows') -and (-not $result.DirExists -or -not $result.PkgExists -or -not $result.BinExists)) {
+            $fallbackAttempted = $true
+            $tmpFallbackDir = Join-Path $env:RUNNER_TEMP "rolldown-win64-fallback-$($env:GITHUB_RUN_ID)"
+            if (Test-Path $tmpFallbackDir) { Remove-Item -Recurse -Force $tmpFallbackDir }
+            New-Item -ItemType Directory -Force -Path $tmpFallbackDir | Out-Null
+
+            Log-Diag ""
+            Log-Diag "=== CONTROLLED WINDOWS-ONLY INSTALLATION FALLBACK ==="
+            Log-Diag "Trigger: Binding absent after npm ci on Windows x64."
+            Log-Diag "Isolation: Using --prefix `"$tmpFallbackDir`" so npm does not hit ERESOLVE against root peerDeps or mutate the 831 pinned packages in node_modules."
+            Log-Diag "Command: npm install --prefix `"$tmpFallbackDir`" --no-save --package-lock=false --ignore-scripts --include=optional @rolldown/binding-win32-x64-msvc@1.2.11"
+            $fbOut = npm install --prefix "$tmpFallbackDir" --no-save --package-lock=false --ignore-scripts --include=optional @rolldown/binding-win32-x64-msvc@1.2.11 2>&1
+            $fbExit = $LASTEXITCODE
+            foreach ($line in $fbOut) { Log-Diag "  [fallback] $line" }
+            Log-Diag "Fallback exit code: $fbExit"
+
+            # Verify zero mutation to package.json and package-lock.json
+            $pkgShaAfter = (Get-FileHash "package.json" -Algorithm SHA256).Hash.ToLower()
+            $lockShaAfter = (Get-FileHash "package-lock.json" -Algorithm SHA256).Hash.ToLower()
+            Log-Diag "Post-fallback package.json SHA256 match : $($pkgShaAfter -eq $pkgShaBefore)"
+            Log-Diag "Post-fallback package-lock SHA256 match : $($lockShaAfter -eq $lockShaBefore)"
+            if (($pkgShaAfter -ne $pkgShaBefore) -or ($lockShaAfter -ne $lockShaBefore)) {
+              Remove-Item -Recurse -Force $tmpFallbackDir -ErrorAction SilentlyContinue
+              $ErrorActionPreference = 'Stop'
+              throw "SAFETY VIOLATION: Controlled fallback unexpectedly modified package.json or package-lock.json!"
+            }
+
+            if ($fbExit -ne 0) {
+              Remove-Item -Recurse -Force $tmpFallbackDir -ErrorAction SilentlyContinue
+              $ErrorActionPreference = 'Stop'
+              throw "CONTROLLED WINDOWS FALLBACK FAILED (exit code $fbExit). Stopping before Vite build; inspect release\ci-logs\00c-rolldown-diagnostics.log."
+            }
+
+            $stagedBinding = Join-Path $tmpFallbackDir "node_modules\@rolldown\binding-win32-x64-msvc"
+            if (-not (Test-Path "$stagedBinding\package.json")) {
+              Remove-Item -Recurse -Force $tmpFallbackDir -ErrorAction SilentlyContinue
+              $ErrorActionPreference = 'Stop'
+              throw "CONTROLLED WINDOWS FALLBACK FAILED: Staged package missing at $stagedBinding"
+            }
+
+            New-Item -ItemType Directory -Force -Path "node_modules\@rolldown" | Out-Null
+            if (Test-Path $bindingDir) { Remove-Item -Recurse -Force $bindingDir }
+            Copy-Item -Path $stagedBinding -Destination $bindingDir -Recurse -Force
+            Remove-Item -Recurse -Force $tmpFallbackDir -ErrorAction SilentlyContinue
+            Log-Diag "Copied verified @rolldown/binding-win32-x64-msvc@1.2.11 into $bindingDir (0 other node_modules packages touched)."
+
+            # Repeat ALL checks after fallback
+            $result = Invoke-RolldownBindingCheck -Phase "POST-FALLBACK"
+          }
+
+          # Section 5: Strict 5-Condition Hard Gate before npm run build:desktop
+          Log-Diag ""
+          Log-Diag "=== 5-CONDITION HARD GATE SUMMARY (fallbackAttempted=$fallbackAttempted) ==="
+          Log-Diag "  Gate 1 — Binding package exists              : $($result.DirExists -and $result.PkgExists)"
+          Log-Diag "  Gate 2 — Installed version equals 1.2.11     : $($result.VersionExact) (found: $($result.InstalledVersion))"
+          Log-Diag "  Gate 3 — Native .node binary exists (PE32+)  : $($result.BinExists -and $result.BinPeValid) ($($result.BinSize) bytes)"
+          Log-Diag "  Gate 4 — Node require.resolve succeeds       : $($result.ResolveOk)"
+          Log-Diag "  Gate 5 — Node native load & rolldown import  : $($result.LoadOk -and $result.RolldownImportOk)"
+
           $ErrorActionPreference = 'Stop'
+          if (-not $result.AllPassed) {
+            throw "HARD GATE FAILED BEFORE npm run build:desktop. One or more of the 5 mandatory Rolldown binding conditions failed. Inspect release\ci-logs\00c-rolldown-diagnostics.log."
+          }
+
+          # Verify strict version pins & remaining Windows x64 bindings
           $electronVer = (Get-Content "node_modules\electron\package.json" -Raw | ConvertFrom-Json).version
           $sqliteVer = (Get-Content "node_modules\better-sqlite3\package.json" -Raw | ConvertFrom-Json).version
           $viteVer = (Get-Content "node_modules\vite\package.json" -Raw | ConvertFrom-Json).version
           $rolldownVer = (Get-Content "node_modules\rolldown\package.json" -Raw | ConvertFrom-Json).version
 
-          if ($electronVer -ne "22.3.27") {
-            throw "Electron version drift detected! Strictly pinned to 22.3.27, found $electronVer"
-          }
-          if ($sqliteVer -ne "11.10.0") {
-            throw "better-sqlite3 version drift detected! Expected 11.10.0, found $sqliteVer"
-          }
-          if ($viteVer -ne "8.3.1") {
-            throw "Vite version drift detected! Expected 8.3.1, found $viteVer"
-          }
-          if ($rolldownVer -ne "1.2.11") {
-            throw "Rolldown version drift detected! Expected 1.2.11, found $rolldownVer"
-          }
+          if ($electronVer -ne "22.3.27") { throw "Electron version drift detected! Strictly pinned to 22.3.27, found $electronVer" }
+          if ($sqliteVer -ne "11.10.0") { throw "better-sqlite3 version drift detected! Expected 11.10.0, found $sqliteVer" }
+          if ($viteVer -ne "8.3.1") { throw "Vite version drift detected! Expected 8.3.1, found $viteVer" }
+          if ($rolldownVer -ne "1.2.11") { throw "Rolldown version drift detected! Expected 1.2.11, found $rolldownVer" }
 
           $requiredWinBindings = @(
             @{ Name = "@rolldown/binding-win32-x64-msvc"; Path = "node_modules\@rolldown\binding-win32-x64-msvc\package.json"; ExpectedVersion = $rolldownVer },
@@ -270,18 +359,18 @@ jobs:
 
           foreach ($binding in $requiredWinBindings) {
             if (-not (Test-Path $binding.Path)) {
-              throw ("DIAGNOSTIC FAILURE: Required Windows x64 optional native binding '{0}' is MISSING at '{1}' after 'npm ci --include=optional' (Node=$(node -v), npm=$(npm -v))." -f $binding.Name, $binding.Path)
+              throw ("HARD GATE FAILURE: Required Windows x64 binding '{0}' is missing at '{1}'." -f $binding.Name, $binding.Path)
             }
             $installedBindingVer = (Get-Content $binding.Path -Raw | ConvertFrom-Json).version
             if ($installedBindingVer -ne $binding.ExpectedVersion) {
-              throw ("DIAGNOSTIC FAILURE: Binding '{0}' version mismatch! Expected {1}, found {2}" -f $binding.Name, $binding.ExpectedVersion, $installedBindingVer)
+              throw ("HARD GATE FAILURE: Binding '{0}' version mismatch! Expected {1}, found {2}" -f $binding.Name, $binding.ExpectedVersion, $installedBindingVer)
             }
             ("Verified Windows x64 native binding: {0}@{1}" -f $binding.Name, $installedBindingVer) | Tee-Object -FilePath $envLog -Append
           }
 
-          "Verified pinned Node=$(node -v), npm=$(npm -v), Electron=$electronVer (ABI 110), better-sqlite3=$sqliteVer, Vite=$viteVer, Rolldown=$rolldownVer" | Tee-Object -FilePath $envLog -Append
+          "HARD GATE PASSED (fallbackAttempted=$fallbackAttempted): Node=$(node -v), npm=$(npm -v), Electron=$electronVer (ABI 110), better-sqlite3=$sqliteVer, Vite=$viteVer, Rolldown=$rolldownVer" | Tee-Object -FilePath $envLog -Append
 
-      - name: Build Vite frontend and Node 16 Electron CJS server (before tests)
+      - name: Build Vite frontend and Node 16 Electron CJS server
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -292,23 +381,58 @@ jobs:
             throw "Development-only dist\assets\aistudio leaked into Vite production build!"
           }
 
-      - name: Run complete automated QA & acceptance test suite
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $PSNativeCommandUseErrorActionPreference = $false
-          npm test -- --no-color 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\02-test-suite.log"
-          if ($LASTEXITCODE -ne 0) { throw "Automated test suite failed with exit code $LASTEXITCODE" }
-
       - name: Run TypeScript validation (tsc --noEmit)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $PSNativeCommandUseErrorActionPreference = $false
-          npm run lint 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\03-typescript-validation.log"
+          npm run lint 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\02-typescript-validation.log"
           if ($LASTEXITCODE -ne 0) { throw "TypeScript validation failed with exit code $LASTEXITCODE" }
 
+      - name: Verify testing dependencies & ensure official desktop icons before tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm ls @testing-library/react @testing-library/dom 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\02b-test-prereqs.log"
+          if ($LASTEXITCODE -ne 0) { throw "Testing dependency verification failed (npm ls @testing-library/react @testing-library/dom exit $LASTEXITCODE)" }
+          npm run ensure:icons 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\02b-test-prereqs.log" -Append
+          if ($LASTEXITCODE -ne 0) { throw "Desktop icon verification/generation failed (exit $LASTEXITCODE)" }
+
+      - name: Run complete automated QA & acceptance test suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm test -- --no-color --maxWorkers=2 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\03-test-suite.log"
+          if ($LASTEXITCODE -ne 0) { throw "Automated test suite failed with exit code $LASTEXITCODE" }
+
+      - name: Upload Windows Desktop Build & Diagnostics Logs (Stop Gate Before Packaging)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldenPalacePOS-DesktopBuild-Logs-run-${{ github.run_number }}-${{ github.run_id }}
+          path: release/ci-logs/*.log
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Record Stop Gate Before Installer Packaging
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true }}
+        shell: pwsh
+        run: |
+          @(
+            '## Windows x64 Desktop Build, TypeScript & Test Gate Passed (Stopped Before Packaging)',
+            "- Commit SHA: `$($env:GITHUB_SHA)`",
+            "- Run ID / Number: `$($env:GITHUB_RUN_ID)` / `#$($env:GITHUB_RUN_NUMBER)`",
+            '- Hard Gate (5/5 Rolldown Binding Conditions): **PASS**',
+            '- `npm run build:desktop`: **PASS**',
+            '- `npm run lint` (`tsc --noEmit`): **PASS**',
+            '- `npm test`: **PASS**',
+            '- Installer packaging intentionally skipped (`stop_before_packaging=true`) pending owner review.'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: Rebuild native better-sqlite3 from source for Electron 22.3.27 (x64 ABI 110, MSVC C++20)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -317,6 +441,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "electron-rebuild failed with exit code $LASTEXITCODE" }
 
       - name: Verify rebuilt native better_sqlite3.node (PE32+ x64 ABI 110) & record digest
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         shell: pwsh
         run: |
           $native = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
@@ -337,6 +462,7 @@ jobs:
           ("Verified rebuilt PE32+ x64 (0x{0:X4}) better_sqlite3.node ({1} bytes) SHA256={2}" -f $machine, $bytes.Length, $nativeHash) | Tee-Object -FilePath "release\ci-logs\06-validation-report.log"
 
       - name: Package Windows x64 NSIS Installer (no auto-publish)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -345,6 +471,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "electron-builder failed with exit code $LASTEXITCODE" }
 
       - name: Verify installer PE header, app.asar.unpacked resources, native ABI 110 match & SHA-256 checksum
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         shell: pwsh
         run: |
           $valLog = "release\ci-logs\06-validation-report.log"
@@ -456,6 +583,7 @@ jobs:
           ("VERIFIED INSTALLER: {0} ({1} bytes) SHA256={2}" -f $installer, $file.Length, $hash) | Tee-Object -FilePath $valLog -Append
 
       - name: Upload Windows Installer, Checksum, Manifest & Validation Logs (Unique Run ID)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         uses: actions/upload-artifact@v4
         with:
           name: GoldenPalacePOS-Setup-x64-run-${{ github.run_number }}-${{ github.run_id }}

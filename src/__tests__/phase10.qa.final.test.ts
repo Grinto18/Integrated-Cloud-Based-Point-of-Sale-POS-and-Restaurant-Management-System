@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import express from 'express';
 import request from 'supertest';
+import { closeSqliteHandle, removeIsolatedTestDir } from './testCleanup.ts';
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_phase10_qa_'));
 const TEST_DB_PATH = path.join(TEST_ROOT, 'phase10_isolated.db');
@@ -16,6 +17,7 @@ process.env.JWT_SECRET = 'phase10_qa_secret_at_least_32_characters_long_12345';
 let app: express.Express;
 let sqlite: any;
 let db: any;
+let closeDatabase: (() => void) | undefined;
 let signUserToken: any;
 let clearRateLimitsForTest: any;
 let backupManager: any;
@@ -29,6 +31,7 @@ async function bootstrap() {
   const dbMod = await import('../db/index.ts');
   sqlite = dbMod.sqlite;
   db = dbMod.db;
+  closeDatabase = dbMod.closeDatabase;
 
   const { seedDatabase } = await import('../db/seed.ts');
   await seedDatabase();
@@ -92,14 +95,18 @@ describe('Golden Palace POS — Phase 10 Final Financial Integrity, Security & R
     clearRateLimitsForTest?.();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     try {
-      const dbMod = require('../db/index.ts');
-      dbMod.closeDatabase();
-    } catch {
-      // Ignore
+      if (closeDatabase) {
+        closeDatabase();
+      } else {
+        const dbMod = await import('../db/index.ts');
+        dbMod.closeDatabase();
+      }
+    } finally {
+      closeSqliteHandle(sqlite);
     }
-    fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+    removeIsolatedTestDir(TEST_ROOT);
   });
 
   it('1. Financial Integrity: split payments reconcile exactly, overpayment is rejected, and retries never double-charge', async () => {

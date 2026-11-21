@@ -6,6 +6,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
+import { removeIsolatedTestDir } from './testCleanup.ts';
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_phase11b_prod_'));
 const PROD_DB_PATH = path.join(TEST_ROOT, 'golden_palace_production.db');
@@ -25,14 +26,10 @@ describe('Golden Palace POS — Phase 11-B Fresh Production Database Initializat
     canary.close();
   });
 
-  afterAll(() => {
-    try {
-      const dbMod = require('../db/index.ts');
-      dbMod.closeDatabase();
-    } catch {
-      // Ignore
-    }
-    fs.rmSync(TEST_ROOT, { recursive: true, force: true });
+  afterAll(async () => {
+    const dbMod = await import('../db/index.ts');
+    dbMod.closeDatabase();
+    removeIsolatedTestDir(TEST_ROOT);
   });
 
   beforeEach(async () => {

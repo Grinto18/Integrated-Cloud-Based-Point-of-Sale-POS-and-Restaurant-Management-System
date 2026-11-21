@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process';
 import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { closeSqliteHandle, removeIsolatedTestDir } from './testCleanup.ts';
 
 const TEST_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_auth_hardening_'));
 const TEST_DB_PATH = path.join(TEST_DB_DIR, 'hardening_isolated.db');
@@ -15,6 +16,7 @@ process.env.SQLITE_DB_PATH = TEST_DB_PATH;
 let app: express.Express;
 let sqlite: any;
 let db: any;
+let closeDatabase: (() => void) | undefined;
 let isBcryptHash: (v: string | null | undefined) => boolean;
 let migratePlaintextPins: () => number;
 let usersTable: any;
@@ -30,6 +32,7 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
     const dbMod = await import('../db/index.ts');
     sqlite = dbMod.sqlite;
     db = dbMod.db;
+    closeDatabase = dbMod.closeDatabase;
     isBcryptHash = dbMod.isBcryptHash;
     migratePlaintextPins = dbMod.migratePlaintextPins;
 
@@ -73,11 +76,11 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
 
   afterAll(() => {
     try {
-      sqlite?.close();
-    } catch {
-      // ignore
+      closeDatabase?.();
+    } finally {
+      closeSqliteHandle(sqlite);
     }
-    fs.rmSync(TEST_DB_DIR, { recursive: true, force: true });
+    removeIsolatedTestDir(TEST_DB_DIR);
   });
 
   describe('1. Bcrypt PIN Hashing & Safe Migration', () => {
@@ -301,34 +304,49 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
           expect(fs.existsSync(path.join(instanceDir, '.jwt_secret'))).toBe(false);
         }
 
-        // 6. Real server.ts subprocess fails fast (exit code !== 0) when Cloud Run JWT_SECRET is missing or short
-        const tsxBin = path.resolve(process.cwd(), 'node_modules/.bin/tsx');
-        const serverProcMissing = spawnSync(tsxBin, ['server.ts'], {
-          cwd: process.cwd(),
-          env: {
+        // 6. Real server.ts subprocess fails fast (exit code === 1) when Cloud Run JWT_SECRET is missing or short
+        // Invoke Node directly with tsx's JS CLI entrypoint so it is 100% cross-platform on Windows & POSIX without shell/.cmd issues
+        const tsxCli = path.resolve(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
+        expect(fs.existsSync(tsxCli)).toBe(true);
+
+        const buildChildEnv = (dbFilename: string, jwtSecret: string): NodeJS.ProcessEnv => {
+          const childEnv: NodeJS.ProcessEnv = {
             ...process.env,
             NODE_ENV: 'production',
-            SQLITE_DB_PATH: path.join(tempCloudRunDir, 'sub_missing.db'),
-            JWT_SECRET: '',
-          },
+            SQLITE_DB_PATH: path.join(tempCloudRunDir, dbFilename),
+            JWT_SECRET: jwtSecret,
+          };
+          delete childEnv.GOLDEN_PALACE_DESKTOP;
+          delete childEnv.JWT_SECRET_FILE;
+          return childEnv;
+        };
+
+        const serverProcMissing = spawnSync(process.execPath, [tsxCli, 'server.ts'], {
+          cwd: process.cwd(),
+          env: buildChildEnv('sub_missing.db', ''),
           encoding: 'utf8',
-          timeout: 15000,
+          timeout: 20000,
         });
-        expect(serverProcMissing.status).toBe(1);
+        expect(serverProcMissing.error, `Subprocess spawn failed: ${serverProcMissing.error?.message}`).toBeUndefined();
+        expect(serverProcMissing.signal, `Subprocess killed by signal: ${serverProcMissing.signal}`).toBeNull();
+        expect(
+          serverProcMissing.status,
+          `Expected exit code 1. stdout=${serverProcMissing.stdout} stderr=${serverProcMissing.stderr}`
+        ).toBe(1);
         expect(serverProcMissing.stderr).toContain('CRITICAL SECURITY ERROR');
 
-        const serverProcShort = spawnSync(tsxBin, ['server.ts'], {
+        const serverProcShort = spawnSync(process.execPath, [tsxCli, 'server.ts'], {
           cwd: process.cwd(),
-          env: {
-            ...process.env,
-            NODE_ENV: 'production',
-            SQLITE_DB_PATH: path.join(tempCloudRunDir, 'sub_short.db'),
-            JWT_SECRET: 'too_short_cloud_run_secret',
-          },
+          env: buildChildEnv('sub_short.db', 'too_short_cloud_run_secret'),
           encoding: 'utf8',
-          timeout: 15000,
+          timeout: 20000,
         });
-        expect(serverProcShort.status).toBe(1);
+        expect(serverProcShort.error, `Subprocess spawn failed: ${serverProcShort.error?.message}`).toBeUndefined();
+        expect(serverProcShort.signal, `Subprocess killed by signal: ${serverProcShort.signal}`).toBeNull();
+        expect(
+          serverProcShort.status,
+          `Expected exit code 1. stdout=${serverProcShort.stdout} stderr=${serverProcShort.stderr}`
+        ).toBe(1);
         expect(serverProcShort.stderr).toContain('at least 32');
 
         // 7. Stable valid JWT_SECRET via env & Google Secret Manager file (JWT_SECRET_FILE)
@@ -344,7 +362,7 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
         expect(ensureServerRuntimeJwtSecret()).toBe(stableCloudRunSecret);
         expect(getJwtSecret()).toBe(stableCloudRunSecret);
       } finally {
-        fs.rmSync(tempCloudRunDir, { recursive: true, force: true });
+        removeIsolatedTestDir(tempCloudRunDir);
         if (origNodeEnv === undefined) delete process.env.NODE_ENV;
         else process.env.NODE_ENV = origNodeEnv;
         if (origSecret === undefined) delete process.env.JWT_SECRET;
@@ -403,7 +421,7 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
         expect(infoHandlerMatch![0]).not.toContain('jwtSecret');
         expect(infoHandlerMatch![0]).not.toContain('JWT_SECRET');
       } finally {
-        fs.rmSync(tempElectronUserData, { recursive: true, force: true });
+        removeIsolatedTestDir(tempElectronUserData);
         if (origNodeEnv === undefined) delete process.env.NODE_ENV;
         else process.env.NODE_ENV = origNodeEnv;
         if (origSecret === undefined) delete process.env.JWT_SECRET;
@@ -430,7 +448,9 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
       const revokedRows = sqlite.prepare('SELECT count(*) as c FROM revoked_tokens').get() as { c: number };
       expect(revokedRows.c).toBeGreaterThanOrEqual(1);
 
-      // Simulate process restart by resetting Vite/Vitest module registry while keeping the same SQLite DB file
+      // Simulate process restart: deterministically close the current SQLite/WAL handle BEFORE resetting modules
+      closeDatabase?.();
+      closeSqliteHandle(sqlite);
       vi.resetModules();
       process.env.SQLITE_DB_PATH = TEST_DB_PATH;
       const restartedApiMod = await import('../server/api.ts');
@@ -455,6 +475,7 @@ describe('Golden Palace POS — Auth Hardening Backend Security Tests', () => {
       const freshDbMod = await import('../db/index.ts');
       sqlite = freshDbMod.sqlite;
       db = freshDbMod.db;
+      closeDatabase = freshDbMod.closeDatabase;
       const freshAuthMod = await import('../middleware/auth.ts');
       signUserToken = freshAuthMod.signUserToken;
       getJwtSecret = freshAuthMod.getJwtSecret;

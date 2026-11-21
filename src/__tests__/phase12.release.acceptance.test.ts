@@ -6,6 +6,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
+import { closeSqliteHandle, removeIsolatedTestDir } from './testCleanup.ts';
 
 const ACCEPTANCE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_phase12_accept_'));
 const ACCEPTANCE_DB = path.join(ACCEPTANCE_ROOT, 'golden_palace_production.db');
@@ -47,10 +48,10 @@ describe('Golden Palace POS — Phase 12 Windows Desktop Release & Acceptance Te
   afterAll(() => {
     try {
       closeDatabase?.();
-    } catch {
-      // ignore
+    } finally {
+      closeSqliteHandle(sqlite);
     }
-    fs.rmSync(ACCEPTANCE_ROOT, { recursive: true, force: true });
+    removeIsolatedTestDir(ACCEPTANCE_ROOT);
   });
 
   it('1. Packaging & Native Electron 22 Configuration: installer metadata, icons, workflow & better-sqlite3 ABI compatibility', () => {

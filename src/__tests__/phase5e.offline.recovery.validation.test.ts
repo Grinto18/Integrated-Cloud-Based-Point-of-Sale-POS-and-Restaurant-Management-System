@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { execFileSync, fork, type ChildProcess } from 'child_process';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { terminateAndAwaitChild, removeIsolatedTestDir } from './testCleanup.ts';
 
 const ROOT_DIR = process.cwd();
 const SERVER_BUNDLE = path.join(ROOT_DIR, 'dist-electron', 'server.cjs');
@@ -167,16 +168,9 @@ describe('Golden Palace POS — Phase 5E Offline Workflow, Crash Recovery & Back
 
   afterAll(async () => {
     for (const c of spawnedChildren) {
-      if (c.exitCode === null && c.signalCode === null) {
-        try {
-          c.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
-      }
+      await terminateAndAwaitChild(c, 5000);
     }
-    await new Promise((r) => setTimeout(r, 150));
-    fs.rmSync(ISOLATED_ROOT, { recursive: true, force: true });
+    removeIsolatedTestDir(ISOLATED_ROOT);
   });
 
   it('1. Full offline cashier workflow on compiled desktop server.cjs, receipt/invoice consistency, shutdown backup, & restart persistence + print queue recovery', async () => {

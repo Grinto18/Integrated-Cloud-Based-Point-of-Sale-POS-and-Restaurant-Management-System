@@ -29,6 +29,7 @@ try {
       'ℹ️ Cloud Run production requires a stable >=32-byte JWT_SECRET via environment variable or Google Secret Manager (JWT_SECRET / JWT_SECRET_FILE).'
     );
   }
+  closeDatabase();
   process.exit(1);
 }
 

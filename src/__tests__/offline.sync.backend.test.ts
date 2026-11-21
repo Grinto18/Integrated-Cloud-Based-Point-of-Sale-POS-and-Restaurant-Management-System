@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import express from 'express';
 import request from 'supertest';
+import { closeSqliteHandle, removeIsolatedTestDir } from './testCleanup.ts';
 
 const TEST_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_offline_sync_'));
 const TEST_DB_PATH = path.join(TEST_DB_DIR, 'offline_sync_isolated.db');
@@ -85,12 +86,8 @@ describe('Golden Palace POS — Offline-First Sync, Idempotency & Transaction Te
   });
 
   afterAll(() => {
-    try {
-      sqlite?.close();
-    } catch {
-      // ignore
-    }
-    fs.rmSync(TEST_DB_DIR, { recursive: true, force: true });
+    closeSqliteHandle(sqlite);
+    removeIsolatedTestDir(TEST_DB_DIR);
   });
 
   it('prevents duplicate orders for sequential and concurrent POST /api/orders retries', async () => {
@@ -405,7 +402,7 @@ describe('Golden Palace POS — Offline-First Sync, Idempotency & Transaction Te
     expect(partialRes.body.syncedIds).toContain('off-restart-1');
 
     // Simulate full Express + SQLite server restart by closing SQLite and resetting modules
-    sqlite.close();
+    closeSqliteHandle(sqlite);
     vi.resetModules();
     await bootstrapServer();
 

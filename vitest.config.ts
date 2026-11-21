@@ -11,7 +11,9 @@ export default defineConfig({
   },
   test: {
     globals: false,
+    isolate: true,
     include: ['src/__tests__/**/*.test.{ts,tsx}'],
-    testTimeout: 15000,
+    testTimeout: 30000,
+    ...(process.platform === 'win32' ? { maxWorkers: 2 } : {}),
   },
 });

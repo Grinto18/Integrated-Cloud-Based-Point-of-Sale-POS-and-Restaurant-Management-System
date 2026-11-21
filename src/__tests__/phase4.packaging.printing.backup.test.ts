@@ -7,6 +7,7 @@ import express from 'express';
 import Database from 'better-sqlite3';
 import request from 'supertest';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { closeSqliteHandle, removeIsolatedTestDir } from './testCleanup.ts';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_phase4_test_'));
 const testDbPath = path.join(tempDir, 'golden_palace_phase4.db');
@@ -54,17 +55,9 @@ describe('Golden Palace POS — Phase 4 Packaging, Asset Hygiene, Printing Hones
   });
 
   afterAll(async () => {
-    try {
-      const dbMod = await import('../db/index.ts');
-      dbMod.closeDatabase();
-    } catch {
-      // ignore
-    }
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    const dbMod = await import('../db/index.ts');
+    dbMod.closeDatabase();
+    removeIsolatedTestDir(tempDir);
   });
 
   // =========================================================================
@@ -418,8 +411,8 @@ describe('Golden Palace POS — Phase 4 Packaging, Asset Hygiene, Printing Hones
         .get() as { value: string };
       expect(sentinel.value).toBe('LIVE_UNTOUCHED');
     } finally {
-      if (localSqlite && localSqlite.open) localSqlite.close();
-      fs.rmSync(isolatedDir, { recursive: true, force: true });
+      closeSqliteHandle(localSqlite);
+      removeIsolatedTestDir(isolatedDir);
     }
   });
 
@@ -468,8 +461,8 @@ describe('Golden Palace POS — Phase 4 Packaging, Asset Hygiene, Printing Hones
       expect(check.integrityCheck).toBe('foreign_key_failed');
       expect(check.foreignKeyViolationsCount).toBeGreaterThanOrEqual(1);
     } finally {
-      if (localSqlite && localSqlite.open) localSqlite.close();
-      fs.rmSync(isolatedDir, { recursive: true, force: true });
+      closeSqliteHandle(localSqlite);
+      removeIsolatedTestDir(isolatedDir);
     }
   });
 
@@ -566,8 +559,8 @@ describe('Golden Palace POS — Phase 4 Packaging, Asset Hygiene, Printing Hones
         .get() as { value: string };
       expect(afterRollback.value).toBe('V3_PROTECTED');
     } finally {
-      if (localSqlite && localSqlite.open) localSqlite.close();
-      fs.rmSync(isolatedDir, { recursive: true, force: true });
+      closeSqliteHandle(localSqlite);
+      removeIsolatedTestDir(isolatedDir);
     }
   });
 });

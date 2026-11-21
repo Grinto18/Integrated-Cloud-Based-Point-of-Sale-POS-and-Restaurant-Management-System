@@ -5,6 +5,7 @@ import express from 'express';
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { removeIsolatedTestDir } from './testCleanup.ts';
 
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'gp_pos_official_menu_test_'));
 const TEST_DB_PATH = path.join(TEST_ROOT, 'isolated_official_menu.db');
@@ -66,16 +67,8 @@ describe('GOLDEN PALACE POS — Official Menu Integration & Import Module (TEST 
   });
 
   afterAll(() => {
-    try {
-      closeDatabase();
-    } catch {
-      // ignore
-    }
-    try {
-      fs.rmSync(TEST_ROOT, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    closeDatabase?.();
+    removeIsolatedTestDir(TEST_ROOT);
   });
 
   async function seedTestStaffUsers() {
