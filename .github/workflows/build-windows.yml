@@ -52,24 +52,55 @@ jobs:
             "Timestamp UTC  : $((Get-Date).ToUniversalTime().ToString('o'))"
           ) | Tee-Object -FilePath $log
 
-      - name: Install pinned dependencies from package-lock.json
+      - name: Install pinned dependencies from package-lock.json (including optional native bindings)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $PSNativeCommandUseErrorActionPreference = $false
-          npm ci --legacy-peer-deps --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\00b-npm-ci.log"
+          npm ci --include=optional --legacy-peer-deps --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\00b-npm-ci.log"
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
 
           $ErrorActionPreference = 'Stop'
+          $envLog = "release\ci-logs\00-environment.log"
           $electronVer = (Get-Content "node_modules\electron\package.json" -Raw | ConvertFrom-Json).version
           $sqliteVer = (Get-Content "node_modules\better-sqlite3\package.json" -Raw | ConvertFrom-Json).version
+          $viteVer = (Get-Content "node_modules\vite\package.json" -Raw | ConvertFrom-Json).version
+          $rolldownVer = (Get-Content "node_modules\rolldown\package.json" -Raw | ConvertFrom-Json).version
+
           if ($electronVer -ne "22.3.27") {
             throw "Electron version drift detected! Strictly pinned to 22.3.27, found $electronVer"
           }
           if ($sqliteVer -ne "11.10.0") {
             throw "better-sqlite3 version drift detected! Expected 11.10.0, found $sqliteVer"
           }
-          "Verified pinned Electron=$electronVer (ABI 110) and better-sqlite3=$sqliteVer" | Tee-Object -FilePath "release\ci-logs\00-environment.log" -Append
+          if ($viteVer -ne "8.3.1") {
+            throw "Vite version drift detected! Expected 8.3.1, found $viteVer"
+          }
+          if ($rolldownVer -ne "1.2.11") {
+            throw "Rolldown version drift detected! Expected 1.2.11, found $rolldownVer"
+          }
+
+          $requiredWinBindings = @(
+            @{ Name = "@rolldown/binding-win32-x64-msvc"; Path = "node_modules\@rolldown\binding-win32-x64-msvc\package.json"; ExpectedVersion = $rolldownVer },
+            @{ Name = "@tailwindcss/oxide-win32-x64-msvc"; Path = "node_modules\@tailwindcss\oxide-win32-x64-msvc\package.json"; ExpectedVersion = "4.3.3" },
+            @{ Name = "lightningcss-win32-x64-msvc (root)"; Path = "node_modules\lightningcss-win32-x64-msvc\package.json"; ExpectedVersion = "1.33.0" },
+            @{ Name = "lightningcss-win32-x64-msvc (tailwind)"; Path = "node_modules\@tailwindcss\node\node_modules\lightningcss\node_modules\lightningcss-win32-x64-msvc\package.json"; ExpectedVersion = "1.32.0" },
+            @{ Name = "@esbuild/win32-x64 (root)"; Path = "node_modules\@esbuild\win32-x64\package.json"; ExpectedVersion = "0.25.12" },
+            @{ Name = "@typescript/typescript-win32-x64"; Path = "node_modules\@typescript\typescript-win32-x64\package.json"; ExpectedVersion = "7.0.2" }
+          )
+
+          foreach ($binding in $requiredWinBindings) {
+            if (-not (Test-Path $binding.Path)) {
+              throw ("DIAGNOSTIC FAILURE: Required Windows x64 optional native binding '{0}' is MISSING at '{1}' after 'npm ci --include=optional' (Node=$(node -v), npm=$(npm -v)). Verify package-lock.json includes Windows x64 optionalDependencies." -f $binding.Name, $binding.Path)
+            }
+            $installedBindingVer = (Get-Content $binding.Path -Raw | ConvertFrom-Json).version
+            if ($installedBindingVer -ne $binding.ExpectedVersion) {
+              throw ("DIAGNOSTIC FAILURE: Binding '{0}' version mismatch! Expected {1}, found {2}" -f $binding.Name, $binding.ExpectedVersion, $installedBindingVer)
+            }
+            ("Verified Windows x64 native binding: {0}@{1}" -f $binding.Name, $installedBindingVer) | Tee-Object -FilePath $envLog -Append
+          }
+
+          "Verified pinned Node=$(node -v), npm=$(npm -v), Electron=$electronVer (ABI 110), better-sqlite3=$sqliteVer, Vite=$viteVer, Rolldown=$rolldownVer" | Tee-Object -FilePath $envLog -Append
 
       - name: Build Vite frontend and Node 16 Electron CJS server (before tests)
         shell: pwsh

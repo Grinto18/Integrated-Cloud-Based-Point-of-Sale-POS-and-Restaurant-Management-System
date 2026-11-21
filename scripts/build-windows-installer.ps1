@@ -28,6 +28,20 @@ if (Test-Path $installerPath) {
     Write-Host "Preserved previous installer rollback copy at $rollbackDir (SHA-256: $prevHash)" -ForegroundColor Yellow
 }
 
+# 2b. Verify required Windows x64 optional native bindings are installed (fails fast if optional deps were omitted)
+$requiredWinBindings = @(
+    'node_modules\@rolldown\binding-win32-x64-msvc\package.json',
+    'node_modules\@tailwindcss\oxide-win32-x64-msvc\package.json',
+    'node_modules\lightningcss-win32-x64-msvc\package.json',
+    'node_modules\@esbuild\win32-x64\package.json',
+    'node_modules\@typescript\typescript-win32-x64\package.json'
+)
+foreach ($bindingPkg in $requiredWinBindings) {
+    if (-not (Test-Path $bindingPkg)) {
+        throw "Required Windows x64 optional native binding missing: $bindingPkg. Run 'npm ci --include=optional --legacy-peer-deps --no-audit --no-fund' first."
+    }
+}
+
 # 3. Build Vite frontend & Node 16-targeted desktop server bundle FIRST (required by Phase 5E tests)
 Write-Host '[1/5] Building frontend (dist/) and desktop server bundle (dist-electron/server.cjs)...' -ForegroundColor Cyan
 npm run build:desktop
