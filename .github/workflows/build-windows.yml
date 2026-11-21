@@ -60,8 +60,187 @@ jobs:
           npm ci --include=optional --legacy-peer-deps --no-audit --no-fund 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\00b-npm-ci.log"
           if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE" }
 
-          $ErrorActionPreference = 'Stop'
+      - name: Mandatory Windows Rolldown Native Binding Diagnostics & Pinned Version Gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $diagLog = "release\ci-logs\00c-rolldown-diagnostics.log"
           $envLog = "release\ci-logs\00-environment.log"
+          $diagFailed = $false
+          $failureCase = "NONE"
+
+          function Log-Diag([string]$msg) {
+            $msg | Tee-Object -FilePath $diagLog -Append
+          }
+
+          Log-Diag "=== MANDATORY WINDOWS ROLLDOWN NATIVE BINDING DIAGNOSTICS ==="
+          Log-Diag "Timestamp UTC       : $((Get-Date).ToUniversalTime().ToString('o'))"
+          Log-Diag "Node / npm          : $(node -v) / $(npm -v)"
+          Log-Diag "package-lock SHA256 : $((Get-FileHash 'package-lock.json' -Algorithm SHA256).Hash.ToLower())"
+          Log-Diag "npm config omit     : $(npm config get omit)"
+          Log-Diag "npm config include  : $(npm config get include)"
+          Log-Diag "npm config os / cpu : $(npm config get os) / $(npm config get cpu)"
+          Log-Diag "npm legacy-peer-deps: $(npm config get legacy-peer-deps)"
+
+          # Verify lockfile itself contains the Windows Rolldown binding entry
+          $lockCheck = node -e "const l=JSON.parse(require('fs').readFileSync('package-lock.json','utf8')); const e=l.packages['node_modules/@rolldown/binding-win32-x64-msvc']; console.log(e ? JSON.stringify({version:e.version,os:e.os,cpu:e.cpu,optional:e.optional,hasResolved:Boolean(e.resolved),hasIntegrity:Boolean(e.integrity)}) : 'MISSING_IN_LOCKFILE');" 2>&1
+          Log-Diag "lockfile entry      : $lockCheck"
+
+          $bindingDir = "node_modules\@rolldown\binding-win32-x64-msvc"
+          $bindingPkgPath = "$bindingDir\package.json"
+          $bindingBinPath = "$bindingDir\rolldown-binding.win32-x64-msvc.node"
+
+          # Diagnostic 1: Directory existence
+          $dirExists = Test-Path $bindingDir
+          Log-Diag "[1/8] Binding directory exists ($bindingDir): $dirExists"
+
+          # Diagnostic 2 & 3 & 6: package.json existence, exact version 1.2.11, OS/CPU metadata
+          $pkgExists = Test-Path $bindingPkgPath
+          Log-Diag "[2/8] Binding package.json exists: $pkgExists"
+          $installedVer = "MISSING"
+          $pkgOs = "MISSING"
+          $pkgCpu = "MISSING"
+          $pkgMain = "MISSING"
+          if ($pkgExists) {
+            try {
+              $pkgObj = Get-Content $bindingPkgPath -Raw | ConvertFrom-Json
+              $installedVer = $pkgObj.version
+              $pkgOs = ($pkgObj.os -join ",")
+              $pkgCpu = ($pkgObj.cpu -join ",")
+              $pkgMain = $pkgObj.main
+            } catch {
+              $installedVer = "CORRUPT_JSON: $($_.Exception.Message)"
+            }
+          }
+          Log-Diag "[3/8] Installed version (expected 1.2.11): $installedVer | main=$pkgMain"
+          Log-Diag "[6/8] Package OS/CPU metadata (expected win32/x64): os=[$pkgOs] cpu=[$pkgCpu]"
+
+          # Diagnostic 4 & 8: Native .node binary existence, file listing, size, PE32+ header & SHA-256
+          $binExists = Test-Path $bindingBinPath
+          Log-Diag "[4/8] Native .node binary exists ($bindingBinPath): $binExists"
+          if ($dirExists) {
+            Log-Diag "[8/8] Binding package directory contents:"
+            Get-ChildItem -Path $bindingDir -Force | ForEach-Object {
+              $itemHash = if (-not $_.PSIsContainer) { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() } else { "DIR" }
+              Log-Diag ("      - {0} ({1} bytes) SHA256={2}" -f $_.Name, $_.Length, $itemHash)
+            }
+          } else {
+            Log-Diag "[8/8] Binding package directory missing; cannot inspect contents."
+          }
+
+          $binPeValid = $false
+          if ($binExists) {
+            $bBytes = [System.IO.File]::ReadAllBytes($bindingBinPath)
+            if ($bBytes.Length -ge 64 -and $bBytes[0] -eq 0x4D -and $bBytes[1] -eq 0x5A) {
+              $bPeOffset = [System.BitConverter]::ToInt32($bBytes, 0x3C)
+              $bMachine = [System.BitConverter]::ToUInt16($bBytes, $bPeOffset + 4)
+              $binPeValid = ($bMachine -eq 0x8664)
+              Log-Diag ("      Native binary PE check: MZ=true Machine=0x{0:X4} Size={1} bytes (expected PE32+ 0x8664)" -f $bMachine, $bBytes.Length)
+            } else {
+              Log-Diag ("      Native binary PE check: INVALID (missing MZ header, Size={0} bytes)" -f $bBytes.Length)
+            }
+          }
+
+          # Diagnostic 7: npm ls report
+          Log-Diag "[7/8] npm ls @rolldown/binding-win32-x64-msvc --all:"
+          $npmLsOut = npm ls @rolldown/binding-win32-x64-msvc --all 2>&1
+          $npmLsExit = $LASTEXITCODE
+          foreach ($line in $npmLsOut) { Log-Diag "      $line" }
+          Log-Diag "      npm ls exit code: $npmLsExit"
+
+          # Loader inspection: rolldown/dist/shared/binding-*.mjs
+          $loaderFiles = Get-ChildItem -Path "node_modules\rolldown\dist\shared" -Filter "binding-*.mjs" -ErrorAction SilentlyContinue
+          foreach ($lf in $loaderFiles) {
+            Log-Diag "Loader file inspected: $($lf.FullName)"
+          }
+
+          # Diagnostic 5: Node.js resolution & direct native module load test (captures full Error.cause chain)
+          Log-Diag "[5/8] Node.js runtime, resolution & direct native binding load test:"
+          $nodeDiagScript = @'
+          const path = require("node:path");
+          console.log("Runtime:", JSON.stringify({
+            platform: process.platform,
+            arch: process.arch,
+            node: process.version,
+            abi: process.versions.modules,
+            shlib_suffix: process.config?.variables?.shlib_suffix,
+            node_target_type: process.config?.variables?.node_target_type
+          }));
+          const dumpErr = (label, err) => {
+            let cur = err;
+            let depth = 0;
+            while (cur && depth < 10) {
+              console.log(`${label} [cause depth ${depth}]: code=${cur.code || "NONE"} message=${cur.message}`);
+              cur = cur.cause;
+              depth++;
+            }
+          };
+          let failed = false;
+          try {
+            const resolvedPkg = require.resolve("@rolldown/binding-win32-x64-msvc/package.json");
+            const resolvedMain = require.resolve("@rolldown/binding-win32-x64-msvc");
+            console.log("require.resolve(package.json):", resolvedPkg);
+            console.log("require.resolve(main):", resolvedMain);
+          } catch (err) {
+            failed = true;
+            dumpErr("RESOLVE_ERROR", err);
+          }
+          try {
+            const mod = require("@rolldown/binding-win32-x64-msvc");
+            console.log("Direct require(@rolldown/binding-win32-x64-msvc): OK, export keys =", Object.keys(mod).length);
+          } catch (err) {
+            failed = true;
+            dumpErr("DIRECT_LOAD_ERROR", err);
+          }
+          (async () => {
+            try {
+              const rd = await import("rolldown");
+              console.log("ESM import(rolldown): OK, VERSION =", rd.VERSION || "loaded");
+            } catch (err) {
+              failed = true;
+              dumpErr("ROLLDOWN_IMPORT_ERROR", err);
+            }
+            process.exit(failed ? 1 : 0);
+          })();
+          '@
+          $nodeDiagOut = node -e $nodeDiagScript 2>&1
+          $nodeDiagExit = $LASTEXITCODE
+          foreach ($line in $nodeDiagOut) { Log-Diag "      $line" }
+          Log-Diag "      Node.js resolution & load exit code: $nodeDiagExit"
+
+          # Classify Case A / B / C explicitly
+          if (-not $dirExists -or -not $pkgExists) {
+            $failureCase = "CASE_A_PACKAGE_MISSING_AFTER_NPM_CI"
+            $diagFailed = $true
+          } elseif (-not $binExists -or -not $binPeValid) {
+            $failureCase = "CASE_B_PACKAGE_EXISTS_BINARY_MISSING_OR_CORRUPT"
+            $diagFailed = $true
+          } elseif ($installedVer -ne "1.2.11" -or $pkgOs -ne "win32" -or $pkgCpu -ne "x64") {
+            $failureCase = "CASE_B_METADATA_OR_VERSION_MISMATCH"
+            $diagFailed = $true
+          } elseif ($nodeDiagExit -ne 0) {
+            $failureCase = "CASE_C_BINARY_EXISTS_NATIVE_LOAD_FAILED"
+            $diagFailed = $true
+          }
+          Log-Diag "DIAGNOSTIC CLASSIFICATION: $failureCase"
+
+          if ($diagFailed) {
+            # Also attach filtered npm debug log clues (zero secrets)
+            $npmLogsDir = Join-Path $env:LOCALAPPDATA "npm-cache\_logs"
+            if (Test-Path $npmLogsDir) {
+              $latestLog = Get-ChildItem $npmLogsDir -Filter "*.log" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($latestLog) {
+                Log-Diag "Filtered npm debug log lines ($($latestLog.Name)):"
+                Select-String -Path $latestLog.FullName -Pattern "rolldown|optional|EBADPLATFORM|EINTEGRITY|failed optional" | Select-Object -First 40 | ForEach-Object {
+                  Log-Diag "      $($_.Line)"
+                }
+              }
+            }
+            throw "ROLLDOWN WINDOWS BINDING DIAGNOSTIC FAILED [$failureCase]. Inspect release\ci-logs\00c-rolldown-diagnostics.log for complete evidence."
+          }
+
+          $ErrorActionPreference = 'Stop'
           $electronVer = (Get-Content "node_modules\electron\package.json" -Raw | ConvertFrom-Json).version
           $sqliteVer = (Get-Content "node_modules\better-sqlite3\package.json" -Raw | ConvertFrom-Json).version
           $viteVer = (Get-Content "node_modules\vite\package.json" -Raw | ConvertFrom-Json).version
@@ -91,7 +270,7 @@ jobs:
 
           foreach ($binding in $requiredWinBindings) {
             if (-not (Test-Path $binding.Path)) {
-              throw ("DIAGNOSTIC FAILURE: Required Windows x64 optional native binding '{0}' is MISSING at '{1}' after 'npm ci --include=optional' (Node=$(node -v), npm=$(npm -v)). Verify package-lock.json includes Windows x64 optionalDependencies." -f $binding.Name, $binding.Path)
+              throw ("DIAGNOSTIC FAILURE: Required Windows x64 optional native binding '{0}' is MISSING at '{1}' after 'npm ci --include=optional' (Node=$(node -v), npm=$(npm -v))." -f $binding.Name, $binding.Path)
             }
             $installedBindingVer = (Get-Content $binding.Path -Raw | ConvertFrom-Json).version
             if ($installedBindingVer -ne $binding.ExpectedVersion) {
