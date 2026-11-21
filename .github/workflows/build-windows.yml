@@ -422,8 +422,8 @@ jobs:
         run: |
           @(
             '## Windows x64 Desktop Build, TypeScript & Test Gate Passed (Stopped Before Packaging)',
-            "- Commit SHA: `$($env:GITHUB_SHA)`",
-            "- Run ID / Number: `$($env:GITHUB_RUN_ID)` / `#$($env:GITHUB_RUN_NUMBER)`",
+            ('- Commit SHA: `{0}`' -f $env:GITHUB_SHA),
+            ('- Run ID / Number: `{0}` / `#{1}`' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_NUMBER),
             '- Hard Gate (5/5 Rolldown Binding Conditions): **PASS**',
             '- `npm run build:desktop`: **PASS**',
             '- `npm run lint` (`tsc --noEmit`): **PASS**',
@@ -572,12 +572,12 @@ jobs:
           $summaryLines = @(
             '## Windows x64 Release Build Succeeded',
             '- Installer: `GoldenPalacePOS-Setup-x64.exe`',
-            "- Size: $($file.Length) bytes",
-            "- GitHub Run ID / Number: `$($env:GITHUB_RUN_ID)` / `#$($env:GITHUB_RUN_NUMBER)`",
-            "- Commit SHA: `$($env:GITHUB_SHA)`",
+            ('- Size: {0} bytes' -f $file.Length),
+            ('- GitHub Run ID / Number: `{0}` / `#{1}`' -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_NUMBER),
+            ('- Commit SHA: `{0}`' -f $env:GITHUB_SHA),
             '- App & Native SQLite Architecture: Windows PE32+ x64 (`0x8664`) / Electron `22.3.27` (ABI `110`)',
-            "- Installer SHA-256: `$hash`",
-            "- Unpacked better_sqlite3.node SHA-256: `$unpackedNativeHash` (exact match verified)"
+            ('- Installer SHA-256: `{0}`' -f $hash),
+            ('- Unpacked better_sqlite3.node SHA-256: `{0}` (exact match verified)' -f $unpackedNativeHash)
           )
           $summaryLines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           ("VERIFIED INSTALLER: {0} ({1} bytes) SHA256={2}" -f $installer, $file.Length, $hash) | Tee-Object -FilePath $valLog -Append
