@@ -10,10 +10,10 @@
 
 ---
 
-## FINAL G1 STATUS: **`BLOCKED`**
+## CURRENT G1 STATUS: **G1-A Build & Test Gate `PASS` | G1-B NSIS Installer Packaging `PENDING OWNER AUTHORIZATION`**
 
-> **Classification:** **`BLOCKED`** — Actual live execution on a GitHub-hosted `windows-latest` runner could not be performed from this workspace container because no `.git` repository, GitHub remote, GitHub credentials/tokens, or `gh` CLI exist inside the container, and the container host is Linux (`4.19.0-gvisor x86_64`).  
-> **Honesty & Compliance Guarantee:** No Windows `.exe` binary was fabricated on Linux, no GitHub Actions run was invented, Electron `22.3.27` was not upgraded, SQLite schema version `4` was not altered, and no production database was accessed.
+> **Verified Live Windows CI Run (`G1-A`):** GitHub Actions Run ID `44939198323` (Run `#4`, `windows-latest` x64) on Commit `f186eefbf5c4ea13354be54383cf9d215ee01bb6` passed `5/5` Rolldown Hard Gate, `npm run build:desktop`, `tsc --noEmit`, `28/28` Vitest files (`175/175` tests), and Stop Gate reporting before installer packaging (`stop_before_packaging=true`, artifact `GoldenPalacePOS-DesktopBuild-Logs-run-4-44939198323`).  
+> **Honesty & Compliance Guarantee:** Direct GitHub API log retrieval is unavailable from this isolated Linux container (no `gh` CLI / token); evidence is recorded strictly from the owner-verified Run `#4` (`44939198323`). No Windows `.exe` binary was fabricated on Linux, Electron `22.3.27` was not upgraded, SQLite schema version `4` was not altered, and no production database was accessed. Installer packaging (`G1-B`), Windows OS compatibility (`G2`), and physical thermal printer validation (`G3`) remain **`PENDING`**.
 
 ---
 
@@ -130,30 +130,30 @@ Because no repository remote URL exists inside this workspace, the exact workflo
 
 ---
 
-## 5. Live CI Evidence Recording Table (To Be Populated After Owner Dispatch)
+## 5. Live CI Evidence Recording Table (Updated From Verified Run `#4` / `44939198323`)
 
 | G1 Evidence Field | Recorded Value |
 |---|---|
-| Repository (`<owner>/<repo>`) | `PENDING — External GitHub repository required` |
-| Branch & Commit SHA | `PENDING` |
-| Workflow Run ID & Run Number | `PENDING` |
-| Workflow Run URL | `PENDING` |
-| Runner OS & Architecture | `PENDING (Configured: windows-latest / x64)` |
-| Electron Version & ABI | `22.3.27` / `ABI 110` (Pinned) |
-| Native `better-sqlite3` Rebuild Result | `PENDING` |
-| `GOLDEN PALACE POS.exe` PE Machine | `PENDING (Expected: 0x8664)` |
-| Unpacked `better_sqlite3.node` PE Machine & SHA-256 | `PENDING (Expected: 0x8664 + exact match)` |
-| `GoldenPalacePOS-Setup-x64.exe` Size (Bytes) | `PENDING` |
-| `GoldenPalacePOS-Setup-x64.exe` SHA-256 | `PENDING` |
-| Uploaded Artifact Name (90-day retention) | `PENDING (Format: GoldenPalacePOS-Setup-x64-run-<N>-<ID>)` |
-| Windows CI Automated Tests & TypeScript Result | `PENDING` *(Local Linux baseline: 28/28 files, 175/175 tests PASS, tsc 0 errors)* |
-| Failures / Warnings | `None locally; live Windows CI execution BLOCKED inside container` |
+| Commit SHA (`G1-A` Verified) | `f186eefbf5c4ea13354be54383cf9d215ee01bb6` |
+| Workflow Run ID & Run Number (`G1-A`) | Run ID `44939198323` / Run `#4` |
+| Runner OS & Architecture | `windows-latest` / `x64` |
+| Electron Version & ABI | `22.3.27` / `ABI 110` (Strictly Pinned) |
+| Rolldown Windows Hard Gate | **`PASS` (5/5 conditions)** |
+| Desktop Build (`npm run build:desktop`) | **`PASS`** |
+| TypeScript Validation (`tsc --noEmit`) | **`PASS`** |
+| Windows CI Automated Tests (`vitest run`) | **`PASS` (`28/28` test files, `175/175` tests passed)** |
+| Stop Gate Artifact (`G1-A`) | `GoldenPalacePOS-DesktopBuild-Logs-run-4-44939198323` (Stopped before installer packaging as configured) |
+| Native `better-sqlite3` Rebuild Result (`G1-B`) | `PENDING OWNER AUTHORIZATION` (`stop_before_packaging=false` not yet authorized) |
+| `GOLDEN PALACE POS.exe` PE Machine (`G1-B`) | `PENDING` (Expected `0x8664`) |
+| Unpacked `better_sqlite3.node` PE Machine & SHA-256 (`G1-B`) | `PENDING` (Expected `0x8664` + exact match) |
+| `GoldenPalacePOS-Setup-x64.exe` Size & SHA-256 (`G1-B`) | `PENDING OWNER AUTHORIZATION` |
+| Non-Blocking CI Maintenance Warning | GitHub Actions Node.js 20 runtime deprecation warning on `actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4` (non-blocking; tracked separately) |
 
 ---
 
 ## 6. Explicit Scope Boundaries & Stop Condition
 
-- **Not Claimed:** This report does **not** claim Windows CI completion, does **not** claim Windows 7 SP1 / 10 / 11 runtime compatibility (Gate G2), and does **not** claim physical 80mm / 58mm / LAN thermal printer validation (Gate G3).
+- **Not Claimed:** This report does **not** claim NSIS installer packaging completion (`G1-B`), does **not** claim Windows 7 SP1 / 10 / 11 runtime compatibility (`G2`), and does **not** claim physical 80mm / 58mm / LAN thermal printer validation (`G3`).
 - **Overall Project Status:** Remains **`PARTIALLY VERIFIED`**.
-- **G1 Final Status:** **`BLOCKED`** (awaiting owner push & GitHub Actions `windows-latest` execution).
-- **Stop Condition Enforced:** Execution stopped immediately after G1 preparation, workflow hardening, local verification, and reporting. Gates G2 and G3 have **not** been started. Awaiting explicit owner authorization and completed G1 CI run results before proceeding.
+- **G1 Status:** **`G1-A` Build & Test Gate = `PASS`** (Commit `f186eefbf5c4ea13354be54383cf9d215ee01bb6`, Run `#4` / `44939198323`); **`G1-B` Installer Packaging = `PENDING OWNER AUTHORIZATION`**.
+- **Stop Condition Enforced:** Execution remains paused before installer packaging pending owner sign-off on `PHASE_05_G1_PACKAGING_AUTHORIZATION_REQUEST.md`. Gates G2 and G3 remain **`PENDING`**.
