@@ -101,7 +101,45 @@ describe('Golden Palace POS — Phase 12 Windows Desktop Release & Acceptance Te
 
     // GitHub Actions Windows runner workflow validation
     expect(workflow).toContain('runs-on: windows-latest');
-    expect(workflow).toContain('electron-rebuild -f -w better-sqlite3 -v 22.3.27');
+    const rebuildStepMatch = workflow.match(
+      /- name: Rebuild native better-sqlite3 from source for Electron 22\.3\.27 \(x64 ABI 110, MSVC C\+\+20\)[\s\S]*?(?=\n\s+- name: Verify rebuilt native better_sqlite3\.node)/
+    );
+    expect(rebuildStepMatch).not.toBeNull();
+    const rebuildStep = rebuildStepMatch![0];
+
+    // Pinned @electron/rebuild CLI resolved from node_modules and invoked through node (not obsolete npx)
+    expect(rebuildStep).not.toMatch(/\bnpx\s+electron-rebuild\b/);
+    expect(rebuildStep).toContain('$rebuildCli = Join-Path $repoRoot "node_modules\\@electron\\rebuild\\lib\\cli.js"');
+    expect(rebuildStep).toContain('if (-not (Test-Path $rebuildCli))');
+
+    // Short physical staging directory under $env:RUNNER_TEMP\er-b with canonical realpath guard
+    expect(rebuildStep).toContain('=== NATIVE BETTER-SQLITE3 SHORT-PATH REBUILD ===');
+    expect(rebuildStep).toContain('$shortRoot = Join-Path $env:RUNNER_TEMP "er-b"');
+    expect(rebuildStep).toContain('realpathSync.native');
+    expect(rebuildStep).toMatch(/\$resolvedStagedSqlite\.Length\s+-ge\s+80/);
+
+    // Exact node invocation preserving better-sqlite3, Electron 22.3.27, x64, --build-from-source, and --module-dir $shortRoot
+    expect(rebuildStep).toMatch(
+      /&\s+node\s+\$rebuildCli\s+-f\s+-w\s+better-sqlite3\s+-v\s+22\.3\.27\s+--arch\s+x64\s+--build-from-source\s+--module-dir\s+\$shortRoot\b/
+    );
+
+    // ABI 110 marker (.forge-meta) verification
+    expect(rebuildStep).toContain('build\\Release\\.forge-meta');
+    expect(rebuildStep).toMatch(/\$metaContent\s+-ne\s+"win32--x64--110"/);
+
+    // Copy compiled binary back to workspace and verify SHA-256 parity
+    expect(rebuildStep).toContain('Copy-Item -Path $stagedNative -Destination $repoNative -Force');
+    expect(rebuildStep).toContain('(Get-FileHash $stagedNative -Algorithm SHA256)');
+    expect(rebuildStep).toContain('(Get-FileHash $repoNative -Algorithm SHA256)');
+    expect(rebuildStep).toMatch(/if\s*\(\$stagedHash\s+-ne\s+\$repoHash\)/);
+
+    // Guaranteed staging directory cleanup inside finally block
+    const finallyMatch = rebuildStep.match(/\bfinally\s*\{[\s\S]*\}/);
+    expect(finallyMatch).not.toBeNull();
+    const finallyBlock = finallyMatch![0];
+    expect(finallyBlock).toContain('Pop-Location');
+    expect(finallyBlock).toContain('Remove-Item -Path $shortRoot -Recurse -Force');
+
     expect(workflow).toContain('GoldenPalacePOS-Setup-x64.exe');
 
     // Electron userData path & production DB separation
