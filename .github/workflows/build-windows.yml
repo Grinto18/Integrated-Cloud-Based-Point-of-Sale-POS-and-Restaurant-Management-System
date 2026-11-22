@@ -435,10 +435,130 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
+          $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          npx electron-rebuild -f -w better-sqlite3 -v 22.3.27 --arch x64 --build-from-source 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "release\ci-logs\04-electron-rebuild.log"
-          if ($LASTEXITCODE -ne 0) { throw "electron-rebuild failed with exit code $LASTEXITCODE" }
+          $repoRoot = (Get-Location).Path
+          $logFile = Join-Path $repoRoot "release\ci-logs\04-electron-rebuild.log"
+          $rebuildCli = Join-Path $repoRoot "node_modules\@electron\rebuild\lib\cli.js"
+          $repoSqlite = Join-Path $repoRoot "node_modules\better-sqlite3"
+          if (-not (Test-Path $rebuildCli)) {
+            throw "Pinned @electron/rebuild CLI missing at: $rebuildCli"
+          }
+          if (-not (Test-Path (Join-Path $repoSqlite "package.json"))) {
+            throw "better-sqlite3 package missing at: $repoSqlite"
+          }
+          if (-not $env:RUNNER_TEMP) {
+            throw "RUNNER_TEMP environment variable is not set; cannot create short physical staging directory."
+          }
+
+          $shortRoot = Join-Path $env:RUNNER_TEMP "er-b"
+          $stagedNodeModules = Join-Path $shortRoot "node_modules"
+          $stagedSqlite = Join-Path $stagedNodeModules "better-sqlite3"
+          $locationPushed = $false
+
+          try {
+            if (Test-Path $shortRoot) {
+              Remove-Item -Path $shortRoot -Recurse -Force
+            }
+            New-Item -ItemType Directory -Force -Path $stagedNodeModules | Out-Null
+            Copy-Item -Path (Join-Path $repoRoot "package.json") -Destination (Join-Path $shortRoot "package.json") -Force
+            Copy-Item -Path (Join-Path $repoRoot "package-lock.json") -Destination (Join-Path $shortRoot "package-lock.json") -Force
+            Copy-Item -Path $repoSqlite -Destination $stagedSqlite -Recurse -Force
+
+            $stagedBuildDir = Join-Path $stagedSqlite "build"
+            if (Test-Path $stagedBuildDir) {
+              Remove-Item -Path $stagedBuildDir -Recurse -Force
+            }
+            $stagedBinDir = Join-Path $stagedSqlite "bin"
+            if (Test-Path $stagedBinDir) {
+              Remove-Item -Path $stagedBinDir -Recurse -Force
+            }
+
+            $stagedPkgVer = (Get-Content (Join-Path $stagedSqlite "package.json") -Raw | ConvertFrom-Json).version
+            if ($stagedPkgVer -ne "11.10.0") {
+              throw ("Staged better-sqlite3 version mismatch! Expected 11.10.0, found {0}" -f $stagedPkgVer)
+            }
+
+            $resolvedStagedSqlite = (& node -e "console.log(require('fs').realpathSync.native(process.argv[1]))" $stagedSqlite).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $resolvedStagedSqlite) {
+              throw "Failed to resolve canonical realpath for staged better-sqlite3 directory: $stagedSqlite"
+            }
+            if ($resolvedStagedSqlite.Length -ge 80) {
+              throw ("Staged better-sqlite3 canonical path is unexpectedly long ({0} chars): {1}" -f $resolvedStagedSqlite.Length, $resolvedStagedSqlite)
+            }
+
+            @(
+              "=== NATIVE BETTER-SQLITE3 SHORT-PATH REBUILD ===",
+              ("Repository Root        : {0} ({1} chars)" -f $repoRoot, $repoRoot.Length),
+              ("Short Staging Root     : {0} ({1} chars)" -f $shortRoot, $shortRoot.Length),
+              ("Staged better-sqlite3  : {0} ({1} chars)" -f $resolvedStagedSqlite, $resolvedStagedSqlite.Length),
+              ("better-sqlite3 Version : {0}" -f $stagedPkgVer),
+              ("Rebuild CLI            : {0}" -f $rebuildCli),
+              "Command                : node <cli> -f -w better-sqlite3 -v 22.3.27 --arch x64 --build-from-source --module-dir <shortRoot>"
+            ) | Tee-Object -FilePath $logFile
+
+            Push-Location $shortRoot
+            $locationPushed = $true
+
+            $ErrorActionPreference = 'Continue'
+            & node $rebuildCli -f -w better-sqlite3 -v 22.3.27 --arch x64 --build-from-source --module-dir $shortRoot 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logFile -Append
+            $rebuildExit = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($rebuildExit -ne 0) {
+              throw "electron-rebuild failed with exit code $rebuildExit"
+            }
+
+            $stagedNative = Join-Path $stagedSqlite "build\Release\better_sqlite3.node"
+            $stagedMeta = Join-Path $stagedSqlite "build\Release\.forge-meta"
+            if (-not (Test-Path $stagedNative)) {
+              throw "Rebuilt native binary missing in short staging directory: $stagedNative"
+            }
+            if (-not (Test-Path $stagedMeta)) {
+              throw "Expected electron-rebuild .forge-meta missing in short staging directory: $stagedMeta"
+            }
+            $metaContent = (Get-Content $stagedMeta -Raw).Trim()
+            if ($metaContent -ne "win32--x64--110") {
+              throw ("Unexpected .forge-meta ABI marker! Expected 'win32--x64--110', found '{0}'" -f $metaContent)
+            }
+
+            $repoBuildDir = Join-Path $repoSqlite "build"
+            if (Test-Path $repoBuildDir) {
+              Remove-Item -Path $repoBuildDir -Recurse -Force
+            }
+            $repoBinDir = Join-Path $repoSqlite "bin"
+            if (Test-Path $repoBinDir) {
+              Remove-Item -Path $repoBinDir -Recurse -Force
+            }
+
+            $repoReleaseDir = Join-Path $repoBuildDir "Release"
+            New-Item -ItemType Directory -Force -Path $repoReleaseDir | Out-Null
+            $repoNative = Join-Path $repoReleaseDir "better_sqlite3.node"
+            $repoMeta = Join-Path $repoReleaseDir ".forge-meta"
+            Copy-Item -Path $stagedNative -Destination $repoNative -Force
+            Copy-Item -Path $stagedMeta -Destination $repoMeta -Force
+
+            $stagedHash = (Get-FileHash $stagedNative -Algorithm SHA256).Hash.ToLower()
+            $repoHash = (Get-FileHash $repoNative -Algorithm SHA256).Hash.ToLower()
+            if ($stagedHash -ne $repoHash) {
+              throw ("Copied better_sqlite3.node SHA-256 mismatch! Staged={0}, Workspace={1}" -f $stagedHash, $repoHash)
+            }
+
+            @(
+              ("Synced Rebuilt Binary  : {0}" -f $repoNative),
+              ("ABI Marker (.forge-meta): {0}" -f $metaContent),
+              ("Synced Binary SHA-256  : {0} (exact match verified)" -f $repoHash)
+            ) | Tee-Object -FilePath $logFile -Append
+          }
+          finally {
+            if ($locationPushed) {
+              Pop-Location
+            }
+            if (Test-Path $shortRoot) {
+              Remove-Item -Path $shortRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $cleanupVerified = -not (Test-Path $shortRoot)
+            ("Staging Cleanup        : removed={0} ({1})" -f $cleanupVerified, $shortRoot) | Tee-Object -FilePath $logFile -Append
+          }
 
       - name: Verify rebuilt native better_sqlite3.node (PE32+ x64 ABI 110) & record digest
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.stop_before_packaging == true) }}
